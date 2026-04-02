@@ -1,0 +1,26 @@
+{
+  "cache_dir": "emb_cache",
+  "datasets": [
+    "arguana",
+    "nfcorpus",
+    "scifact"
+  ],
+  "graph_M_values": [
+    16,
+    32
+  ],
+  "sketch_bits": [
+    64,
+    128
+  ],
+  "ef_search_values": [
+    20,
+    50
+  ],
+  "visited_budget": "not_exposed_natively",
+  "seed": 0,
+  "qacos_iters": 2,
+  "max_queries": 80,
+  "num_threads": 1,
+  "num_rows": 3840
+}
