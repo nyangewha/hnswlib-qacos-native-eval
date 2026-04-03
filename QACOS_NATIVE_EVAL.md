@@ -129,7 +129,7 @@ The runner writes:
 - Datasets: ArguAna, FiQA, NFCorpus, SciFact
 - Native backend: official `hnswlib`
 - Embeddings: L2-normalized 768-d MPNet float embeddings
-- Search settings: `M in {16,32}`, `efSearch in {20,50}`
+- Search settings: `M in {16,32}`, `efConstruction=200`, `efSearch in {20,50}`
 - Sketch bits: `64`, `128`
 - QA-Cos iterations: `T=2`
 - Query cap: `80` per dataset
