@@ -143,7 +143,6 @@ Only compact validation artifacts are kept in this repository.
 - `native_hnsw_full_t2/native_hnsw_metadata.json`
 
 ### Candidate-Count Efficiency
-- `native_hnsw_candidate_full_t2/native_hnsw_summary.csv`
 - `native_hnsw_candidate_full_t2/native_hnsw_candidate_efficiency_summary.csv`
 - `native_hnsw_candidate_full_t2/native_hnsw_metadata.json`
 
