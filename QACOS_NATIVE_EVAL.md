@@ -147,6 +147,12 @@ Only compact validation artifacts are kept in this repository.
 - `native_hnsw_candidate_full_t2/native_hnsw_candidate_efficiency_summary.csv`
 - `native_hnsw_candidate_full_t2/native_hnsw_metadata.json`
 
+### Combined Table Figures
+- `native_hnsw_tables_4dataset/table_native_hnsw_frontier_allbits.png`
+- `native_hnsw_tables_4dataset/table_native_hnsw_candidate_efficiency_allbits.png`
+- `native_hnsw_tables_4dataset/table_native_hnsw_frontier_allbits.csv`
+- `native_hnsw_tables_4dataset/table_native_hnsw_candidate_efficiency_allbits.csv`
+
 Raw per-query CSVs and smoke-test outputs are intentionally omitted to keep the repository lightweight.
 
 ## Metric Families
