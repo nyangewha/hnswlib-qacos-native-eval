@@ -134,6 +134,11 @@ The runner writes:
 - QA-Cos iterations: `T=2`
 - Query cap: `80` per dataset
 - Seed: `0`
+- Native HNSW layer structures (top-to-bottom node counts):
+  - ArguAna: `M=16 [5,44,554,8674]`, `M=32 [2,17,275,8674]`
+  - FiQA: `M=16 [2,17,248,3617,57638]`, `M=32 [5,68,1806,57638]`
+  - NFCorpus: `M=16 [2,17,239,3633]`, `M=32 [5,115,3633]`
+  - SciFact: `M=16 [3,29,346,5183]`, `M=32 [1,10,176,5183]`
 
 ## Included Result Files
 
