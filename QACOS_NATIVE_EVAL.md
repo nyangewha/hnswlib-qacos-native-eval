@@ -1,16 +1,21 @@
 # QA-Cos Native HNSW Evaluation
 
-This repository contains a **controlled scorer-replacement experiment inside the official [`nmslib/hnswlib`](https://github.com/nmslib/hnswlib) codebase**.
+This repository contains a **controlled scorer-replacement experiment inside the official [`nmslib/hnswlib`](https://github.com/nmslib/hnswlib) codebase**, together with compact wall-clock artifacts for a small set of practical follow-up experiments.
 
 ## Scope
 
-This is **not** a new ANN system. The goal is to test whether replacing only the **search-time scorer** inside native hierarchical HNSW search improves:
-- final frontier quality, and
-- downstream reranking efficiency.
+This repository is still centered on a narrow methodological question:
+
+- native HNSW graph/index construction is unchanged;
+- native HNSW search mechanics are unchanged unless explicitly marked as a gated practical variant;
+- the main variable is the **coarse search-time scorer** or a **decoder refinement inside the coarse stage**.
+
+This is **not** a new ANN system and **not** a redesign of HNSW.
 
 ## What Remains Unchanged
 
 The following native HNSW components are unchanged:
+
 - graph/index construction
 - insertion
 - pruning / neighbor selection
@@ -21,33 +26,49 @@ The following native HNSW components are unchanged:
 
 ## What Changes
 
-Only the **search-time scorer** is changed.
+### A. Native scorer-replacement experiment
 
 Compared scorers:
+
 - `simhash_baseline`: Hamming/agreement-based cosine proxy
 - `qacos`: query-aware QA-Cos using the same stored document sign sketches plus the full real-valued query-side projections
 
 A narrow **logging-only extension** is also included to expose the bottom-layer distinct nodes whose experimental scorer distance was actually computed. This is used only for offline candidate-efficiency evaluation and does not change native HNSW search semantics.
+
+### B. Practical wall-clock follow-up experiments
+
+Two compact follow-up variants are also included:
+
+- **gated QA-Cos**
+  - a practical hybrid variant that applies QA-Cos only to an ambiguity band in same-count space and falls back to the SimHash baseline outside that band
+- **storage-aware rerank timing**
+  - native HNSW search remains in memory, while exact full-vector reranking is measured with file-backed normalized full-vector stores under:
+    - `warm_cache`
+    - `cache_limited`
+
+These follow-up variants are included as practical engineering experiments and should be interpreted separately from the strict scorer-only replacement setting.
 
 ## Main Files
 
 - `hnswlib/hnswalg.h`
   - native experimental scorer path
   - bottom-layer visited-candidate logging
+  - gated QA-Cos wall-clock path
 - `python_bindings/bindings.cpp`
   - Python binding exposure for experimental outputs
 - `run_native_hnsw_qacos_eval.py`
-  - evaluation runner for the native experiments
+  - evaluation runner for the native scorer-replacement experiment
+- `run_native_hnsw_wallclock_eval.py`
+  - same-setting / matched-recall wall-clock runner
+- `run_native_hnsw_storage_aware_matched_eval.py`
+  - storage-aware matched-recall rerank runner
 
 ## Reproducing From These Files
 
-This repository is intentionally minimal. To reproduce the experiment, start from the official
-[`nmslib/hnswlib`](https://github.com/nmslib/hnswlib) source tree and then replace only the two
-patched source files plus the runner provided here.
+This repository is intentionally minimal. To reproduce the experiments, start from the official
+[`nmslib/hnswlib`](https://github.com/nmslib/hnswlib) source tree and then replace only the patched files plus the runners provided here.
 
 ### Step 1. Get the official `hnswlib` source
-
-Clone the official repository:
 
 ```bash
 git clone https://github.com/nmslib/hnswlib.git
@@ -61,70 +82,33 @@ Copy these files into the matching locations inside the official `hnswlib` check
 - `hnswlib/hnswalg.h` -> `./hnswlib/hnswalg.h`
 - `python_bindings/bindings.cpp` -> `./python_bindings/bindings.cpp`
 - `run_native_hnsw_qacos_eval.py` -> `./run_native_hnsw_qacos_eval.py`
-
-No other source files need to be modified for this experiment.
+- `run_native_hnsw_wallclock_eval.py` -> `./run_native_hnsw_wallclock_eval.py`
+- `run_native_hnsw_storage_aware_matched_eval.py` -> `./run_native_hnsw_storage_aware_matched_eval.py`
 
 ### Step 3. Build the patched Python package
-
-From the root of the patched `hnswlib` checkout:
 
 ```bash
 python -m pip install -e .
 ```
 
-This rebuilds the Python extension with the experimental scorer path enabled.
-
 ### Step 4. Prepare embedding caches
 
-The runner expects cached float embeddings for:
+The runners expect cached float embeddings for the datasets under test:
+
 - ArguAna
 - NFCorpus
 - SciFact
 - FiQA
 
-It uses the same cache format as our earlier rebuttal experiments:
+They use the same cache format as our earlier experiments:
+
 - L2-normalized 768-d MPNet embeddings
 - document embeddings
 - query embeddings
 
 Pass the cache root with `--cache_dir`.
 
-### Step 5. Run the native evaluation
-
-Example command:
-
-```bash
-python run_native_hnsw_qacos_eval.py \
-  --cache_dir /path/to/emb_cache \
-  --out_dir ./native_hnsw_candidate_full_t2 \
-  --datasets arguana,fiqa,nfcorpus,scifact \
-  --graph_M_values 16,32 \
-  --sketch_bits 64,128 \
-  --ef_search_values 50 \
-  --max_queries 80 \
-  --seed 0 \
-  --qacos_iters 2 \
-  --num_threads 1
-```
-
-The same runner also produces the final-frontier metrics used in the native HNSW evaluation.
-
-### Step 6. What the runner writes
-
-The runner writes:
-- summary CSVs for the final native `top_candidates` frontier metrics
-- summary CSVs for visited-candidate-pool prefix efficiency metrics
-- metadata JSON describing the exact run settings
-
-### Notes
-
-- This experiment does **not** modify graph/index construction.
-- It does **not** modify insertion, pruning, level assignment, `efSearch`, or the stopping rule.
-- The only intended methodological change is the **search-time scorer**.
-- The candidate-efficiency metrics come from a **logging-only extension** that exposes the
-  bottom-layer distinct nodes whose scorer distance was actually computed.
-
-## Experimental Settings
+## Native scorer-replacement settings
 
 - Datasets: ArguAna, FiQA, NFCorpus, SciFact
 - Native backend: official `hnswlib`
@@ -134,44 +118,118 @@ The runner writes:
 - QA-Cos iterations: `T=2`
 - Query cap: `80` per dataset
 - Seed: `0`
-- Native HNSW layer structures (top-to-bottom node counts):
-  - ArguAna: `M=16 [5,44,554,8674]`, `M=32 [2,17,275,8674]`
-  - FiQA: `M=16 [2,17,248,3617,57638]`, `M=32 [5,68,1806,57638]`
-  - NFCorpus: `M=16 [2,17,239,3633]`, `M=32 [5,115,3633]`
-  - SciFact: `M=16 [3,29,346,5183]`, `M=32 [1,10,176,5183]`
+
+Native HNSW layer structures (top-to-bottom node counts):
+
+- ArguAna: `M=16 [5,44,554,8674]`, `M=32 [2,17,275,8674]`
+- FiQA: `M=16 [2,17,248,3617,57638]`, `M=32 [5,68,1806,57638]`
+- NFCorpus: `M=16 [2,17,239,3633]`, `M=32 [5,115,3633]`
+- SciFact: `M=16 [3,29,346,5183]`, `M=32 [1,10,176,5183]`
+
+## Practical wall-clock follow-up settings
+
+### A. Gated matched-recall wall-clock
+
+- Datasets: NFCorpus, FiQA
+- Bits: `128`
+- `M in {16,32}`
+- Query cap: `80`
+- Threads: `1`
+- QA-Cos iterations: `T=1`
+- `mills_approx = True`
+- gate band: `same in [72,96]`
+- matched target: `Recall@10`
+- target values: `0.8`, `0.9`
+
+### B. Storage-aware rerank timing
+
+- native HNSW search remains unchanged and in memory
+- exact rerank uses file-backed normalized full-vector stores
+- two storage modes are reported:
+  - `warm_cache`
+  - `cache_limited`
+- `cache_limited` uses a larger replicated file-backed store plus cache pressure before timed runs
+
+Important caveat:
+
+- this setup is intended to be **more storage-aware than a fully in-memory rerank setting**
+- it does **not** directly measure physical SSD cache-miss rate
+
+### C. FiQA `Recall@100` follow-up
+
+To stress large downstream rerank burden, we also include a focused `FiQA, 128-bit, M=32` matched experiment for:
+
+- `Recall@100 >= 0.8`
+- `Recall@100 >= 0.9`
 
 ## Included Result Files
 
 Only compact validation artifacts are kept in this repository.
 
-### Final Frontier Quality
+### 1. Native scorer-replacement results
+
+Final frontier quality:
+
 - `native_hnsw_full_t2/native_hnsw_summary.csv`
 - `native_hnsw_full_t2/native_hnsw_metadata.json`
 
-### Candidate-Count Efficiency
+Candidate-count efficiency:
+
 - `native_hnsw_candidate_full_t2/native_hnsw_candidate_efficiency_summary.csv`
 - `native_hnsw_candidate_full_t2/native_hnsw_metadata.json`
 
-### Combined Table Figures
+Combined table figures:
+
 - `native_hnsw_tables_4dataset/table_native_hnsw_frontier_allbits.png`
 - `native_hnsw_tables_4dataset/table_native_hnsw_candidate_efficiency_allbits.png`
 - `native_hnsw_tables_4dataset/table_native_hnsw_frontier_allbits.csv`
 - `native_hnsw_tables_4dataset/table_native_hnsw_candidate_efficiency_allbits.csv`
 
-Raw per-query CSVs and smoke-test outputs are intentionally omitted to keep the repository lightweight.
+### 2. Practical wall-clock artifacts
+
+All compact follow-up wall-clock files are stored in:
+
+- `native_hnsw_wallclock_storage_aware/`
+
+Included files:
+
+- `matched_recall_r10_table.csv`
+  - matched `Recall@10` in-memory chosen `efSearch` table for `simhash` vs `qacos_gated`
+- `storage_aware_summary_r10.csv`
+  - storage-aware matched `Recall@10` summary for `warm_cache` and `cache_limited`
+- `storage_aware_comparison_r10.csv`
+  - compact direct comparison table for `simhash` vs `qacos_gated`
+- `r100_fiqa_m32_search_summary.csv`
+  - FiQA `Recall@100` search-side reachability / chosen `efSearch` summary
+- `r100_fiqa_m32_matched_table.csv`
+  - compact matched `Recall@100` table used for storage-aware rerank timing
+- `storage_aware_summary_r100_fiqa_m32.csv`
+  - storage-aware FiQA `Recall@100` summary
+
+Raw per-query CSVs, smoke-test outputs, and larger intermediate files are intentionally omitted to keep the repository lightweight.
 
 ## Metric Families
 
-### 1. Final `top_candidates` Frontier Metric
+### 1. Final `top_candidates` frontier metric
+
 This metric uses the final native HNSW `top_candidates` result and measures frontier quality after exact float-cosine reranking.
 
-### 2. Visited Candidate Pool Prefix Metric
+### 2. Visited candidate pool prefix metric
+
 This metric uses the **bottom-layer visited-and-scored distinct node pool**. Candidates are sorted by the same scorer, and we measure how many coarse candidates must be exact-reranked to reach a target recall.
 
-These two metric families are complementary:
-- the first evaluates the quality of the final native HNSW frontier,
-- the second evaluates reranking efficiency on the candidate pool surfaced during native search.
+### 3. Matched-recall wall-clock metric
 
-## Headline Result
+This metric asks whether two methods can reach the **same target retrieval quality** at different `efSearch` values and different end-to-end query cost.
 
-Across both metric families, QA-Cos improves native HNSW search quality under matched settings while keeping the underlying HNSW build and search mechanics unchanged.
+For the storage-aware setting, the main total is:
+
+- native HNSW search time
+- plus exact rerank time over file-backed full-vector reads
+
+## Headline Takeaways
+
+- In the strict native scorer-replacement setting, QA-Cos improves frontier quality and candidate efficiency while leaving native HNSW construction unchanged.
+- In the practical gated wall-clock setting, a `same-count` band gate can materially reduce the cost of QA-Cos relative to full scorer replacement.
+- In the storage-aware rerank setting, reducing exact full-vector rereads becomes substantially more valuable than in the fully in-memory case.
+- In the focused FiQA `Recall@100` follow-up, gated QA-Cos reaches the target with much smaller `efSearch` and rerank burden; for `Recall@100 >= 0.9`, the included sweep reaches the target for gated QA-Cos while the matched SimHash baseline does not.

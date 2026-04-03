@@ -6,6 +6,7 @@
 #include "hnswlib.h"
 #include <thread>
 #include <atomic>
+#include <chrono>
 #include <stdlib.h>
 #include <assert.h>
 #include <cstdint>
@@ -736,6 +737,9 @@ class Index {
         int num_threads = -1,
         const std::string& scorer = "simhash_baseline",
         size_t qacos_iters = 2,
+        bool mills_approx = false,
+        int qacos_gate_min_same = -1,
+        int qacos_gate_max_same = -1,
         const std::function<bool(hnswlib::labeltype)>& filter = nullptr) {
         py::array_t<uint64_t, py::array::c_style | py::array::forcecast> query_sign_packed(query_sign_packed_obj);
         auto sign_buf = query_sign_packed.request();
@@ -760,7 +764,7 @@ class Index {
             if ((size_t)proj_buf.shape[0] != rows || (size_t)proj_buf.shape[1] != appr_alg->experimental_sketch_bits_) {
                 throw std::runtime_error("query_proj shape does not match query count or sketch_bits");
             }
-        } else if (scorer == "qacos") {
+        } else if (scorer == "qacos" || scorer == "qacos_gated") {
             throw std::runtime_error("query_proj is required for qacos scorer");
         }
 
@@ -769,7 +773,12 @@ class Index {
         if (rows <= (size_t)num_threads * 4)
             num_threads = 1;
 
-        auto scorer_mode = scorer == "qacos" ? hnswlib::ExperimentalSearchScorer::kQACos : hnswlib::ExperimentalSearchScorer::kSimhashBaseline;
+        hnswlib::ExperimentalSearchScorer scorer_mode = hnswlib::ExperimentalSearchScorer::kSimhashBaseline;
+        if (scorer == "qacos") {
+            scorer_mode = hnswlib::ExperimentalSearchScorer::kQACos;
+        } else if (scorer == "qacos_gated") {
+            scorer_mode = hnswlib::ExperimentalSearchScorer::kQACosGated;
+        }
         hnswlib::labeltype* data_numpy_l = new hnswlib::labeltype[rows * k];
         float* data_numpy_d = new float[rows * k];
         size_t* visited_nodes = new size_t[rows];
@@ -778,6 +787,7 @@ class Index {
         size_t* lower_pushes = new size_t[rows];
         size_t* coarse_sizes = new size_t[rows];
         size_t* visited_candidate_sizes = new size_t[rows];
+        uint64_t* search_ns = new uint64_t[rows];
         std::vector<std::vector<hnswlib::labeltype>> coarse_id_lists(rows);
         std::vector<std::vector<hnswlib::labeltype>> visited_candidate_id_lists(rows);
         std::vector<std::vector<float>> visited_candidate_dist_lists(rows);
@@ -786,6 +796,16 @@ class Index {
         CustomFilterFunctor* p_idFilter = filter ? &idFilter : nullptr;
         auto* sign_ptr = (uint64_t*)sign_buf.ptr;
         auto* proj_ptr = has_proj ? (float*)proj_buf.ptr : nullptr;
+        std::vector<float> proj_abs_storage;
+        float* proj_abs_ptr = nullptr;
+        if (has_proj) {
+            size_t total = rows * appr_alg->experimental_sketch_bits_;
+            proj_abs_storage.resize(total);
+            for (size_t i = 0; i < total; ++i) {
+                proj_abs_storage[i] = std::fabs(proj_ptr[i]);
+            }
+            proj_abs_ptr = proj_abs_storage.data();
+        }
 
         {
             py::gil_scoped_release l;
@@ -793,13 +813,38 @@ class Index {
                 hnswlib::ExperimentalQueryScorerCtx ctx;
                 ctx.query_sign_packed = sign_ptr + row * code_words;
                 ctx.query_proj = has_proj ? (proj_ptr + row * appr_alg->experimental_sketch_bits_) : nullptr;
+                ctx.query_proj_abs = has_proj ? (proj_abs_ptr + row * appr_alg->experimental_sketch_bits_) : nullptr;
                 ctx.code_words = code_words;
                 ctx.sketch_bits = appr_alg->experimental_sketch_bits_;
                 ctx.qacos_iters = qacos_iters;
+                ctx.qacos_mills_approx = mills_approx;
+                ctx.qacos_gate_min_same = qacos_gate_min_same;
+                ctx.qacos_gate_max_same = qacos_gate_max_same;
                 hnswlib::ExperimentalSearchStats stats;
                 std::vector<hnswlib::labeltype> coarse_labels;
                 std::vector<hnswlib::labeltype> visited_candidate_labels;
                 std::vector<float> visited_candidate_dists;
+                auto t0 = std::chrono::steady_clock::now();
+                std::vector<float> qacos_lookup_storage;
+                std::vector<uint8_t> qacos_lookup_ready_storage;
+                if ((scorer_mode == hnswlib::ExperimentalSearchScorer::kQACos ||
+                     scorer_mode == hnswlib::ExperimentalSearchScorer::kQACosGated) &&
+                    qacos_iters == 1 && has_proj) {
+                    size_t table_size = (appr_alg->experimental_sketch_bits_ + 1) * appr_alg->experimental_sketch_bits_;
+                    size_t same_table = appr_alg->experimental_sketch_bits_ + 1;
+                    qacos_lookup_storage.resize(table_size * 6 + same_table * 2);
+                    qacos_lookup_ready_storage.assign(appr_alg->experimental_sketch_bits_ + 1, 0);
+                    float* ptr = qacos_lookup_storage.data();
+                    ctx.qacos_g_pos = ptr; ptr += table_size;
+                    ctx.qacos_g_neg = ptr; ptr += table_size;
+                    ctx.qacos_term1_pos = ptr; ptr += table_size;
+                    ctx.qacos_term1_neg = ptr; ptr += table_size;
+                    ctx.qacos_term2_pos = ptr; ptr += table_size;
+                    ctx.qacos_term2_neg = ptr;
+                    ctx.qacos_base_g = ptr; ptr += same_table;
+                    ctx.qacos_base_h = ptr;
+                    ctx.qacos_lookup_ready = qacos_lookup_ready_storage.data();
+                }
                 auto result = appr_alg->searchKnnExperimental(ctx, k, scorer_mode, p_idFilter, &stats, &coarse_labels, &visited_candidate_labels, &visited_candidate_dists);
                 if (result.size() != k)
                     throw std::runtime_error("Cannot return the results in a contiguous 2D array. Probably ef or M is too small");
@@ -809,12 +854,15 @@ class Index {
                     data_numpy_l[row * k + i] = result_tuple.second;
                     result.pop();
                 }
+                auto t1 = std::chrono::steady_clock::now();
                 visited_nodes[row] = stats.visited_nodes;
                 upper_hops[row] = stats.upper_hops;
                 lower_pops[row] = stats.lower_pops;
                 lower_pushes[row] = stats.lower_pushes;
                 coarse_sizes[row] = stats.coarse_result_size;
                 visited_candidate_sizes[row] = stats.visited_candidate_pool_size;
+                search_ns[row] = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
                 coarse_id_lists[row] = std::move(coarse_labels);
                 visited_candidate_id_lists[row] = std::move(visited_candidate_labels);
                 visited_candidate_dist_lists[row] = std::move(visited_candidate_dists);
@@ -829,6 +877,7 @@ class Index {
         py::capsule free_pushes(lower_pushes, [](void* f) { delete[] (size_t*)f; });
         py::capsule free_sizes(coarse_sizes, [](void* f) { delete[] (size_t*)f; });
         py::capsule free_visited_candidate_sizes(visited_candidate_sizes, [](void* f) { delete[] (size_t*)f; });
+        py::capsule free_search_ns(search_ns, [](void* f) { delete[] (uint64_t*)f; });
 
         py::list coarse_ids_py;
         py::list visited_candidate_ids_py;
@@ -854,6 +903,7 @@ class Index {
         info["lower_pushes"] = py::array_t<size_t>({rows}, {sizeof(size_t)}, lower_pushes, free_pushes);
         info["coarse_sizes"] = py::array_t<size_t>({rows}, {sizeof(size_t)}, coarse_sizes, free_sizes);
         info["visited_candidate_sizes"] = py::array_t<size_t>({rows}, {sizeof(size_t)}, visited_candidate_sizes, free_visited_candidate_sizes);
+        info["search_ns"] = py::array_t<uint64_t>({rows}, {sizeof(uint64_t)}, search_ns, free_search_ns);
         info["coarse_ids"] = coarse_ids_py;
         info["visited_candidate_ids"] = visited_candidate_ids_py;
         info["visited_candidate_dists"] = visited_candidate_dists_py;
@@ -862,6 +912,324 @@ class Index {
             py::array_t<hnswlib::labeltype>({ rows, k }, { k * sizeof(hnswlib::labeltype), sizeof(hnswlib::labeltype) }, data_numpy_l, free_when_done_l),
             py::array_t<float>({ rows, k }, { k * sizeof(float), sizeof(float) }, data_numpy_d, free_when_done_d),
             info);
+    }
+
+    py::object refine_candidates_experimental(
+        py::object query_sign_packed_obj,
+        py::object query_proj_obj,
+        py::object candidate_ids_obj,
+        int num_threads = -1,
+        const std::string& scorer = "qacos",
+        size_t qacos_iters = 1,
+        bool mills_approx = false,
+        int qacos_gate_min_same = -1,
+        int qacos_gate_max_same = -1) {
+        py::array_t<uint64_t, py::array::c_style | py::array::forcecast> query_sign_packed(query_sign_packed_obj);
+        auto sign_buf = query_sign_packed.request();
+        if (sign_buf.ndim != 2) {
+            throw std::runtime_error("query_sign_packed must be a 2D array [num_queries, code_words]");
+        }
+        size_t rows = (size_t)sign_buf.shape[0];
+        size_t code_words = (size_t)sign_buf.shape[1];
+        if (code_words != appr_alg->experimental_code_words_) {
+            throw std::runtime_error("query_sign_packed code_words does not match attached document sketches");
+        }
+
+        py::array query_proj_any;
+        py::buffer_info proj_buf;
+        bool has_proj = !query_proj_obj.is_none();
+        if (has_proj) {
+            query_proj_any = py::array::ensure(query_proj_obj);
+            proj_buf = query_proj_any.request();
+            if (proj_buf.ndim != 2) {
+                throw std::runtime_error("query_proj must be a 2D array [num_queries, sketch_bits]");
+            }
+            if ((size_t)proj_buf.shape[0] != rows || (size_t)proj_buf.shape[1] != appr_alg->experimental_sketch_bits_) {
+                throw std::runtime_error("query_proj shape does not match query count or sketch_bits");
+            }
+        } else if (scorer == "qacos" || scorer == "qacos_gated") {
+            throw std::runtime_error("query_proj is required for qacos scorer");
+        }
+
+        py::array_t<hnswlib::labeltype, py::array::c_style | py::array::forcecast> candidate_ids(candidate_ids_obj);
+        auto cand_buf = candidate_ids.request();
+        if (cand_buf.ndim != 2) {
+            throw std::runtime_error("candidate_ids must be a 2D array [num_queries, frontier_size]");
+        }
+        if ((size_t)cand_buf.shape[0] != rows) {
+            throw std::runtime_error("candidate_ids row count must match query count");
+        }
+        size_t frontier_size = (size_t)cand_buf.shape[1];
+
+        if (num_threads <= 0)
+            num_threads = num_threads_default;
+        if (rows <= (size_t)num_threads * 4)
+            num_threads = 1;
+
+        hnswlib::ExperimentalSearchScorer scorer_mode = hnswlib::ExperimentalSearchScorer::kSimhashBaseline;
+        if (scorer == "qacos") {
+            scorer_mode = hnswlib::ExperimentalSearchScorer::kQACos;
+        } else if (scorer == "qacos_gated") {
+            scorer_mode = hnswlib::ExperimentalSearchScorer::kQACosGated;
+        }
+        hnswlib::labeltype* out_labels = new hnswlib::labeltype[rows * frontier_size];
+        float* out_dists = new float[rows * frontier_size];
+        uint64_t* refine_ns = new uint64_t[rows];
+
+        auto* sign_ptr = (uint64_t*)sign_buf.ptr;
+        auto* proj_ptr = has_proj ? (float*)proj_buf.ptr : nullptr;
+        std::vector<float> proj_abs_storage;
+        float* proj_abs_ptr = nullptr;
+        if (has_proj) {
+            size_t total = rows * appr_alg->experimental_sketch_bits_;
+            proj_abs_storage.resize(total);
+            for (size_t i = 0; i < total; ++i) {
+                proj_abs_storage[i] = std::fabs(proj_ptr[i]);
+            }
+            proj_abs_ptr = proj_abs_storage.data();
+        }
+        auto* cand_ptr = (hnswlib::labeltype*)cand_buf.ptr;
+
+        {
+            py::gil_scoped_release l;
+            ParallelFor(0, rows, num_threads, [&](size_t row, size_t threadId) {
+                hnswlib::ExperimentalQueryScorerCtx ctx;
+                ctx.query_sign_packed = sign_ptr + row * code_words;
+                ctx.query_proj = has_proj ? (proj_ptr + row * appr_alg->experimental_sketch_bits_) : nullptr;
+                ctx.query_proj_abs = has_proj ? (proj_abs_ptr + row * appr_alg->experimental_sketch_bits_) : nullptr;
+                ctx.code_words = code_words;
+                ctx.sketch_bits = appr_alg->experimental_sketch_bits_;
+                ctx.qacos_iters = qacos_iters;
+                ctx.qacos_mills_approx = mills_approx;
+                ctx.qacos_gate_min_same = qacos_gate_min_same;
+                ctx.qacos_gate_max_same = qacos_gate_max_same;
+
+                std::vector<std::pair<float, hnswlib::labeltype>> scored;
+                scored.reserve(frontier_size);
+                auto t0 = std::chrono::steady_clock::now();
+                std::vector<float> qacos_lookup_storage;
+                std::vector<uint8_t> qacos_lookup_ready_storage;
+                if ((scorer_mode == hnswlib::ExperimentalSearchScorer::kQACos ||
+                     scorer_mode == hnswlib::ExperimentalSearchScorer::kQACosGated) &&
+                    qacos_iters == 1 && has_proj) {
+                    size_t table_size = (appr_alg->experimental_sketch_bits_ + 1) * appr_alg->experimental_sketch_bits_;
+                    size_t same_table = appr_alg->experimental_sketch_bits_ + 1;
+                    qacos_lookup_storage.resize(table_size * 6 + same_table * 2);
+                    qacos_lookup_ready_storage.assign(appr_alg->experimental_sketch_bits_ + 1, 0);
+                    float* ptr = qacos_lookup_storage.data();
+                    ctx.qacos_g_pos = ptr; ptr += table_size;
+                    ctx.qacos_g_neg = ptr; ptr += table_size;
+                    ctx.qacos_term1_pos = ptr; ptr += table_size;
+                    ctx.qacos_term1_neg = ptr; ptr += table_size;
+                    ctx.qacos_term2_pos = ptr; ptr += table_size;
+                    ctx.qacos_term2_neg = ptr;
+                    ctx.qacos_base_g = ptr; ptr += same_table;
+                    ctx.qacos_base_h = ptr;
+                    ctx.qacos_lookup_ready = qacos_lookup_ready_storage.data();
+                }
+                for (size_t j = 0; j < frontier_size; ++j) {
+                    hnswlib::labeltype label = cand_ptr[row * frontier_size + j];
+                    auto it = appr_alg->label_lookup_.find(label);
+                    if (it == appr_alg->label_lookup_.end()) {
+                        throw std::runtime_error("candidate label not found in index during experimental refinement");
+                    }
+                    float dist = appr_alg->computeExperimentalSearchDistance_(it->second, ctx, scorer_mode);
+                    scored.emplace_back(dist, label);
+                }
+                std::stable_sort(
+                    scored.begin(),
+                    scored.end(),
+                    [](const std::pair<float, hnswlib::labeltype>& a, const std::pair<float, hnswlib::labeltype>& b) {
+                        return a.first < b.first;
+                    });
+                auto t1 = std::chrono::steady_clock::now();
+                refine_ns[row] = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+                for (size_t j = 0; j < frontier_size; ++j) {
+                    out_dists[row * frontier_size + j] = scored[j].first;
+                    out_labels[row * frontier_size + j] = scored[j].second;
+                }
+            });
+        }
+
+        py::capsule free_labels(out_labels, [](void* f) { delete[] (hnswlib::labeltype*)f; });
+        py::capsule free_dists(out_dists, [](void* f) { delete[] (float*)f; });
+        py::capsule free_refine_ns(refine_ns, [](void* f) { delete[] (uint64_t*)f; });
+
+        py::dict info;
+        info["refine_ns"] = py::array_t<uint64_t>({rows}, {sizeof(uint64_t)}, refine_ns, free_refine_ns);
+        return py::make_tuple(
+            py::array_t<hnswlib::labeltype>(
+                {rows, frontier_size},
+                {frontier_size * sizeof(hnswlib::labeltype), sizeof(hnswlib::labeltype)},
+                out_labels,
+                free_labels),
+            py::array_t<float>(
+                {rows, frontier_size},
+                {frontier_size * sizeof(float), sizeof(float)},
+                out_dists,
+                free_dists),
+            info);
+    }
+
+    py::dict profile_refine_candidates_experimental(
+        py::object query_sign_packed_obj,
+        py::object query_proj_obj,
+        py::object candidate_ids_obj,
+        int repeats = 10,
+        const std::string& scorer = "qacos",
+        size_t qacos_iters = 1,
+        bool mills_approx = false,
+        int qacos_gate_min_same = -1,
+        int qacos_gate_max_same = -1) {
+        py::array_t<uint64_t, py::array::c_style | py::array::forcecast> query_sign_packed(query_sign_packed_obj);
+        auto sign_buf = query_sign_packed.request();
+        if (sign_buf.ndim != 2) {
+            throw std::runtime_error("query_sign_packed must be a 2D array [num_queries, code_words]");
+        }
+        size_t rows = (size_t)sign_buf.shape[0];
+        size_t code_words = (size_t)sign_buf.shape[1];
+        if (code_words != appr_alg->experimental_code_words_) {
+            throw std::runtime_error("query_sign_packed code_words does not match attached document sketches");
+        }
+
+        py::array query_proj_any;
+        py::buffer_info proj_buf;
+        bool has_proj = !query_proj_obj.is_none();
+        if (has_proj) {
+            query_proj_any = py::array::ensure(query_proj_obj);
+            proj_buf = query_proj_any.request();
+            if (proj_buf.ndim != 2) {
+                throw std::runtime_error("query_proj must be a 2D array [num_queries, sketch_bits]");
+            }
+            if ((size_t)proj_buf.shape[0] != rows || (size_t)proj_buf.shape[1] != appr_alg->experimental_sketch_bits_) {
+                throw std::runtime_error("query_proj shape does not match query count or sketch_bits");
+            }
+        } else if (scorer == "qacos" || scorer == "qacos_gated") {
+            throw std::runtime_error("query_proj is required for qacos scorer");
+        }
+
+        py::array_t<hnswlib::labeltype, py::array::c_style | py::array::forcecast> candidate_ids(candidate_ids_obj);
+        auto cand_buf = candidate_ids.request();
+        if (cand_buf.ndim != 2) {
+            throw std::runtime_error("candidate_ids must be a 2D array [num_queries, frontier_size]");
+        }
+        if ((size_t)cand_buf.shape[0] != rows) {
+            throw std::runtime_error("candidate_ids row count must match query count");
+        }
+        size_t frontier_size = (size_t)cand_buf.shape[1];
+
+        hnswlib::ExperimentalSearchScorer scorer_mode = hnswlib::ExperimentalSearchScorer::kSimhashBaseline;
+        if (scorer == "qacos") {
+            scorer_mode = hnswlib::ExperimentalSearchScorer::kQACos;
+        } else if (scorer == "qacos_gated") {
+            scorer_mode = hnswlib::ExperimentalSearchScorer::kQACosGated;
+        }
+        auto* sign_ptr = (uint64_t*)sign_buf.ptr;
+        auto* proj_ptr = has_proj ? (float*)proj_buf.ptr : nullptr;
+        auto* cand_ptr = (hnswlib::labeltype*)cand_buf.ptr;
+
+        uint64_t query_abs_prep_ns = 0;
+        uint64_t query_lookup_prep_ns = 0;
+        std::vector<float> proj_abs_storage;
+        float* proj_abs_ptr = nullptr;
+        if (has_proj) {
+            size_t total = rows * appr_alg->experimental_sketch_bits_;
+            proj_abs_storage.resize(total);
+            auto t0 = std::chrono::steady_clock::now();
+            for (size_t i = 0; i < total; ++i) {
+                proj_abs_storage[i] = std::fabs(proj_ptr[i]);
+            }
+            auto t1 = std::chrono::steady_clock::now();
+            query_abs_prep_ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+            proj_abs_ptr = proj_abs_storage.data();
+        }
+
+        uint64_t total_ns = 0;
+        uint64_t label_lookup_ns = 0;
+        uint64_t sort_ns = 0;
+        hnswlib::ExperimentalRefineProfileStats profile_stats;
+
+        {
+            py::gil_scoped_release l;
+            for (int rep = 0; rep < repeats; ++rep) {
+                auto rep_t0 = std::chrono::steady_clock::now();
+                for (size_t row = 0; row < rows; ++row) {
+                    hnswlib::ExperimentalQueryScorerCtx ctx;
+                    ctx.query_sign_packed = sign_ptr + row * code_words;
+                    ctx.query_proj = has_proj ? (proj_ptr + row * appr_alg->experimental_sketch_bits_) : nullptr;
+                    ctx.query_proj_abs = has_proj ? (proj_abs_ptr + row * appr_alg->experimental_sketch_bits_) : nullptr;
+                    ctx.code_words = code_words;
+                    ctx.sketch_bits = appr_alg->experimental_sketch_bits_;
+                    ctx.qacos_iters = qacos_iters;
+                    ctx.qacos_mills_approx = mills_approx;
+                    ctx.qacos_gate_min_same = qacos_gate_min_same;
+                    ctx.qacos_gate_max_same = qacos_gate_max_same;
+                    std::vector<float> qacos_lookup_storage;
+                    std::vector<uint8_t> qacos_lookup_ready_storage;
+                    if ((scorer_mode == hnswlib::ExperimentalSearchScorer::kQACos ||
+                         scorer_mode == hnswlib::ExperimentalSearchScorer::kQACosGated) &&
+                        qacos_iters == 1 && has_proj) {
+                        size_t table_size = (appr_alg->experimental_sketch_bits_ + 1) * appr_alg->experimental_sketch_bits_;
+                        size_t same_table = appr_alg->experimental_sketch_bits_ + 1;
+                        qacos_lookup_storage.resize(table_size * 6 + same_table * 2);
+                        qacos_lookup_ready_storage.assign(appr_alg->experimental_sketch_bits_ + 1, 0);
+                        float* ptr = qacos_lookup_storage.data();
+                        ctx.qacos_g_pos = ptr; ptr += table_size;
+                        ctx.qacos_g_neg = ptr; ptr += table_size;
+                        ctx.qacos_term1_pos = ptr; ptr += table_size;
+                        ctx.qacos_term1_neg = ptr; ptr += table_size;
+                        ctx.qacos_term2_pos = ptr; ptr += table_size;
+                        ctx.qacos_term2_neg = ptr;
+                        ctx.qacos_base_g = ptr; ptr += same_table;
+                        ctx.qacos_base_h = ptr;
+                        ctx.qacos_lookup_ready = qacos_lookup_ready_storage.data();
+                    }
+
+                    std::vector<std::pair<float, hnswlib::labeltype>> scored;
+                    scored.reserve(frontier_size);
+                    for (size_t j = 0; j < frontier_size; ++j) {
+                        hnswlib::labeltype label = cand_ptr[row * frontier_size + j];
+                        auto t_lookup0 = std::chrono::steady_clock::now();
+                        auto it = appr_alg->label_lookup_.find(label);
+                        auto t_lookup1 = std::chrono::steady_clock::now();
+                        label_lookup_ns += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t_lookup1 - t_lookup0).count());
+                        if (it == appr_alg->label_lookup_.end()) {
+                            throw std::runtime_error("candidate label not found in index during experimental refinement profiling");
+                        }
+                        float dist = appr_alg->computeExperimentalSearchDistanceProfile_(it->second, ctx, scorer_mode, &profile_stats);
+                        scored.emplace_back(dist, label);
+                    }
+                    auto t_sort0 = std::chrono::steady_clock::now();
+                    std::stable_sort(
+                        scored.begin(),
+                        scored.end(),
+                        [](const std::pair<float, hnswlib::labeltype>& a, const std::pair<float, hnswlib::labeltype>& b) {
+                            return a.first < b.first;
+                        });
+                    auto t_sort1 = std::chrono::steady_clock::now();
+                    sort_ns += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t_sort1 - t_sort0).count());
+                }
+                auto rep_t1 = std::chrono::steady_clock::now();
+                total_ns += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(rep_t1 - rep_t0).count());
+            }
+        }
+
+        py::dict out;
+        out["rows"] = py::int_(rows);
+        out["frontier_size"] = py::int_(frontier_size);
+        out["repeats"] = py::int_(repeats);
+        out["mills_approx"] = py::bool_(mills_approx);
+        out["query_abs_prep_ns"] = py::int_(query_abs_prep_ns);
+        out["query_lookup_prep_ns"] = py::int_(query_lookup_prep_ns);
+        out["total_ns"] = py::int_(total_ns);
+        out["label_lookup_ns"] = py::int_(label_lookup_ns);
+        out["sort_ns"] = py::int_(sort_ns);
+        out["scorer_total_ns"] = py::int_(profile_stats.scorer_total_ns);
+        out["scorer_same_count_ns"] = py::int_(profile_stats.scorer_same_count_ns);
+        out["scorer_core_ns"] = py::int_(profile_stats.scorer_core_ns);
+        out["scorer_calls"] = py::int_(profile_stats.scorer_calls);
+        return out;
     }
 
     void markDeleted(size_t label) {
@@ -1131,7 +1499,32 @@ PYBIND11_PLUGIN(hnswlib) {
             py::arg("num_threads") = -1,
             py::arg("scorer") = "simhash_baseline",
             py::arg("qacos_iters") = 2,
+            py::arg("mills_approx") = false,
+            py::arg("qacos_gate_min_same") = -1,
+            py::arg("qacos_gate_max_same") = -1,
             py::arg("filter") = py::none())
+        .def("refine_candidates_experimental",
+            &Index<float>::refine_candidates_experimental,
+            py::arg("query_sign_packed"),
+            py::arg("query_proj"),
+            py::arg("candidate_ids"),
+            py::arg("num_threads") = -1,
+            py::arg("scorer") = "qacos",
+            py::arg("qacos_iters") = 1,
+            py::arg("mills_approx") = false,
+            py::arg("qacos_gate_min_same") = -1,
+            py::arg("qacos_gate_max_same") = -1)
+        .def("profile_refine_candidates_experimental",
+            &Index<float>::profile_refine_candidates_experimental,
+            py::arg("query_sign_packed"),
+            py::arg("query_proj"),
+            py::arg("candidate_ids"),
+            py::arg("repeats") = 10,
+            py::arg("scorer") = "qacos",
+            py::arg("qacos_iters") = 1,
+            py::arg("mills_approx") = false,
+            py::arg("qacos_gate_min_same") = -1,
+            py::arg("qacos_gate_max_same") = -1)
         .def("add_items",
             &Index<float>::addItems,
             py::arg("data"),

@@ -21,14 +21,28 @@ typedef unsigned int linklistsizeint;
 enum class ExperimentalSearchScorer : uint8_t {
     kSimhashBaseline = 0,
     kQACos = 1,
+    kQACosGated = 2,
 };
 
 struct ExperimentalQueryScorerCtx {
     const uint64_t* query_sign_packed = nullptr;
     const float* query_proj = nullptr;
+    const float* query_proj_abs = nullptr;
+    const float* qacos_g_pos = nullptr;
+    const float* qacos_g_neg = nullptr;
+    const float* qacos_term1_pos = nullptr;
+    const float* qacos_term1_neg = nullptr;
+    const float* qacos_term2_pos = nullptr;
+    const float* qacos_term2_neg = nullptr;
+    const float* qacos_base_g = nullptr;
+    const float* qacos_base_h = nullptr;
+    uint8_t* qacos_lookup_ready = nullptr;
     size_t code_words = 0;
     size_t sketch_bits = 0;
     size_t qacos_iters = 2;
+    bool qacos_mills_approx = false;
+    int qacos_gate_min_same = -1;
+    int qacos_gate_max_same = -1;
 };
 
 struct ExperimentalSearchStats {
@@ -38,6 +52,13 @@ struct ExperimentalSearchStats {
     size_t visited_nodes = 0;
     size_t coarse_result_size = 0;
     size_t visited_candidate_pool_size = 0;
+};
+
+struct ExperimentalRefineProfileStats {
+    uint64_t scorer_total_ns = 0;
+    uint64_t scorer_same_count_ns = 0;
+    uint64_t scorer_core_ns = 0;
+    size_t scorer_calls = 0;
 };
 
 template<typename dist_t>
@@ -85,6 +106,9 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     std::vector<uint64_t> experimental_doc_sign_packed_;
     size_t experimental_code_words_{0};
     size_t experimental_sketch_bits_{0};
+    std::vector<float> experimental_qacos_t0_lut_;
+    std::vector<float> experimental_qacos_sinh_t0_lut_;
+    std::vector<float> experimental_qacos_cosh_t0_lut_;
 
     mutable std::mutex label_lookup_lock;  // lock for label_lookup_
     std::unordered_map<labeltype, tableint> label_lookup_;
@@ -218,51 +242,245 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         experimental_code_words_ = code_words;
         experimental_sketch_bits_ = sketch_bits;
         experimental_doc_sign_packed_.assign(packed_codes, packed_codes + (num_elements * code_words));
+        experimental_qacos_t0_lut_.resize(sketch_bits + 1);
+        experimental_qacos_sinh_t0_lut_.resize(sketch_bits + 1);
+        experimental_qacos_cosh_t0_lut_.resize(sketch_bits + 1);
+        constexpr float kPi = 3.14159265358979323846f;
+        for (size_t same = 0; same <= sketch_bits; ++same) {
+            float p_same = static_cast<float>(same) / static_cast<float>(sketch_bits);
+            float cos_base = std::cos(kPi * (1.0f - p_same));
+            float rho = std::max(-0.999f, std::min(0.999f, cos_base));
+            float t0 = 0.5f * std::log((1.0f + rho) / (1.0f - rho));
+            experimental_qacos_t0_lut_[same] = t0;
+            experimental_qacos_sinh_t0_lut_[same] = std::sinh(t0);
+            experimental_qacos_cosh_t0_lut_[same] = std::cosh(t0);
+        }
+    }
+
+    inline size_t countExperimentalSameBits_(
+        const uint64_t* doc,
+        const uint64_t* qry) const {
+        size_t same = 0;
+        size_t consumed = 0;
+        for (size_t w = 0; w < experimental_code_words_; ++w) {
+            uint64_t x = ~(doc[w] ^ qry[w]);
+            size_t bits_this = std::min<size_t>(64, experimental_sketch_bits_ - consumed);
+            uint64_t mask = bits_this == 64 ? ~uint64_t(0) : ((uint64_t(1) << bits_this) - 1);
+            same += static_cast<size_t>(__builtin_popcountll(x & mask));
+            consumed += bits_this;
+        }
+        return same;
+    }
+
+    inline float computeQACosLambdaExact_(float z) const {
+        constexpr float kInvSqrt2Pi = 0.3989422804014327f;
+        constexpr float kInvSqrt2 = 0.7071067811865475f;
+        float Phi = 0.5f * std::erfc(-z * kInvSqrt2);
+        if (Phi < 1e-9f) Phi = 1e-9f;
+        float phi = kInvSqrt2Pi * std::exp(-0.5f * z * z);
+        return phi / Phi;
+    }
+
+    inline float computeQACosLambdaApprox_(float z) const {
+        constexpr float kInvSqrt2Pi = 0.3989422804014327f;
+        constexpr float kNegNum[5] = {
+            0.79788506f,
+            1.17169827f,
+            0.70448005f,
+            0.21056996f,
+            0.02802298f,
+        };
+        constexpr float kNegDen[5] = {
+            1.0f,
+            0.670636259f,
+            0.211142346f,
+            0.0279898218f,
+            8.52562921e-07f,
+        };
+        constexpr float kPosPoly[13] = {
+            1.99999814f,
+            -1.59553f,
+            1.27025533f,
+            -0.736685819f,
+            0.35666612f,
+            -0.139943589f,
+            0.0414958704f,
+            -0.00890502684f,
+            0.00134835758f,
+            -0.000140010739f,
+            9.48023361e-06f,
+            -3.77005571e-07f,
+            6.68058468e-09f,
+        };
+
+        if (z < 0.0f) {
+            float x = -z;
+            if (x <= 8.0f) {
+                float num = kNegNum[4];
+                float den = kNegDen[4];
+                for (int i = 3; i >= 0; --i) {
+                    num = num * x + kNegNum[i];
+                    den = den * x + kNegDen[i];
+                }
+                return num / std::max(den, 1e-9f);
+            }
+            return x + (1.0f / x);
+        }
+
+        float phi = kInvSqrt2Pi * std::exp(-0.5f * z * z);
+        if (z >= 8.0f) {
+            return phi;
+        }
+        float poly = kPosPoly[12];
+        for (int i = 11; i >= 0; --i) {
+            poly = poly * z + kPosPoly[i];
+        }
+        poly = std::max(poly, 1e-4f);
+        return phi * poly;
+    }
+
+    inline float computeQACosLambda_(float z, bool use_approx) const {
+        return use_approx ? computeQACosLambdaApprox_(z) : computeQACosLambdaExact_(z);
+    }
+
+    inline void fillExperimentalQACosT1LookupTableForSame_(
+        size_t same,
+        const float* query_proj_abs,
+        bool use_approx,
+        float* g_pos,
+        float* g_neg,
+        float* term1_pos,
+        float* term1_neg,
+        float* term2_pos,
+        float* term2_neg,
+        float* base_g_out,
+        float* base_h_out) const {
+        if (query_proj_abs == nullptr) {
+            throw std::runtime_error("query_proj_abs is required for T=1 lookup-table precompute");
+        }
+        float s = experimental_qacos_sinh_t0_lut_[same];
+        float c = experimental_qacos_cosh_t0_lut_[same];
+        float base_g = 0.0f;
+        float base_h = 0.0f;
+        for (size_t bit = 0; bit < experimental_sketch_bits_; ++bit) {
+            float abs_u = query_proj_abs[bit];
+            for (int sign_idx = 0; sign_idx < 2; ++sign_idx) {
+                float u = sign_idx == 0 ? abs_u : -abs_u;
+                float z = s * u;
+                float lam = computeQACosLambda_(z, use_approx);
+                float dzdt = c * u;
+                float lam_prime = -lam * (z + lam);
+                float g = c * u * lam;
+                float t1 = lam_prime * dzdt * dzdt;
+                float t2 = lam * z;
+                if (sign_idx == 0) {
+                    g_pos[bit] = g;
+                    term1_pos[bit] = t1;
+                    term2_pos[bit] = t2;
+                } else {
+                    g_neg[bit] = g;
+                    term1_neg[bit] = t1;
+                    term2_neg[bit] = t2;
+                    base_g += g;
+                    base_h += t1 + t2;
+                }
+            }
+        }
+        if (base_g_out) *base_g_out = base_g;
+        if (base_h_out) *base_h_out = base_h;
+    }
+
+    inline void fillExperimentalQACosT1LookupTables(
+        const float* query_proj_abs,
+        bool use_approx,
+        float* g_pos,
+        float* g_neg,
+        float* term1_pos,
+        float* term1_neg,
+        float* term2_pos,
+        float* term2_neg,
+        float* base_g,
+        float* base_h) const {
+        for (size_t same = 0; same <= experimental_sketch_bits_; ++same) {
+            size_t base = same * experimental_sketch_bits_;
+            fillExperimentalQACosT1LookupTableForSame_(
+                same,
+                query_proj_abs,
+                use_approx,
+                g_pos + base,
+                g_neg + base,
+                term1_pos + base,
+                term1_neg + base,
+                term2_pos + base,
+                term2_neg + base,
+                base_g ? (base_g + same) : nullptr,
+                base_h ? (base_h + same) : nullptr);
+        }
+    }
+
+    inline void ensureExperimentalQACosT1LookupSame_(
+        size_t same,
+        const ExperimentalQueryScorerCtx& ctx) const {
+        if (ctx.qacos_lookup_ready == nullptr || ctx.qacos_lookup_ready[same]) {
+            return;
+        }
+        size_t base = same * ctx.sketch_bits;
+        fillExperimentalQACosT1LookupTableForSame_(
+            same,
+            ctx.query_proj_abs,
+            ctx.qacos_mills_approx,
+            const_cast<float*>(ctx.qacos_g_pos) + base,
+            const_cast<float*>(ctx.qacos_g_neg) + base,
+            const_cast<float*>(ctx.qacos_term1_pos) + base,
+            const_cast<float*>(ctx.qacos_term1_neg) + base,
+            const_cast<float*>(ctx.qacos_term2_pos) + base,
+            const_cast<float*>(ctx.qacos_term2_neg) + base,
+            const_cast<float*>(ctx.qacos_base_g) + same,
+            const_cast<float*>(ctx.qacos_base_h) + same);
+        ctx.qacos_lookup_ready[same] = 1;
     }
 
     inline dist_t computeSimhashBaselineDistance_(
         tableint internal_id,
         const ExperimentalQueryScorerCtx& ctx) const {
         const uint64_t* doc = experimental_doc_sign_packed_.data() + (static_cast<size_t>(internal_id) * experimental_code_words_);
-        const uint64_t* qry = ctx.query_sign_packed;
-        size_t same = 0;
-        size_t consumed = 0;
-        for (size_t w = 0; w < experimental_code_words_; ++w) {
-            uint64_t x = ~(doc[w] ^ qry[w]);
-            size_t bits_this = std::min<size_t>(64, experimental_sketch_bits_ - consumed);
-            uint64_t mask = bits_this == 64 ? ~uint64_t(0) : ((uint64_t(1) << bits_this) - 1);
-            same += static_cast<size_t>(__builtin_popcountll(x & mask));
-            consumed += bits_this;
-        }
+        size_t same = countExperimentalSameBits_(doc, ctx.query_sign_packed);
+        return computeSimhashBaselineDistanceFromSame_(same);
+    }
+
+    inline dist_t computeSimhashBaselineDistanceFromSame_(size_t same) const {
         float p_same = static_cast<float>(same) / static_cast<float>(experimental_sketch_bits_);
         float score = std::cos(static_cast<float>(3.14159265358979323846) * (1.0f - p_same));
         score = std::max(-1.0f, std::min(1.0f, score));
         return static_cast<dist_t>(1.0f - score);
     }
 
-    inline dist_t computeQACosDistance_(
-        tableint internal_id,
-        const ExperimentalQueryScorerCtx& ctx) const {
-        const uint64_t* doc = experimental_doc_sign_packed_.data() + (static_cast<size_t>(internal_id) * experimental_code_words_);
-        const uint64_t* qry = ctx.query_sign_packed;
-        size_t same = 0;
-        size_t consumed = 0;
-        for (size_t w = 0; w < experimental_code_words_; ++w) {
-            uint64_t x = ~(doc[w] ^ qry[w]);
-            size_t bits_this = std::min<size_t>(64, experimental_sketch_bits_ - consumed);
-            uint64_t mask = bits_this == 64 ? ~uint64_t(0) : ((uint64_t(1) << bits_this) - 1);
-            same += static_cast<size_t>(__builtin_popcountll(x & mask));
-            consumed += bits_this;
-        }
-        float p_same = static_cast<float>(same) / static_cast<float>(experimental_sketch_bits_);
-        float cos_base = std::cos(static_cast<float>(3.14159265358979323846) * (1.0f - p_same));
-        float rho = std::max(-0.999f, std::min(0.999f, cos_base));
-        float t = 0.5f * std::log((1.0f + rho) / (1.0f - rho));
-        const float inv_sqrt_2pi = 0.3989422804014327f;
-        const float sqrt2 = 1.4142135623730951f;
-        for (size_t iter = 0; iter < ctx.qacos_iters; ++iter) {
-            float s = std::sinh(t);
-            float c = std::cosh(t);
+    inline dist_t computeQACosDistanceT1WithSame_(
+        const uint64_t* doc,
+        const ExperimentalQueryScorerCtx& ctx,
+        size_t same) const {
+        float t = experimental_qacos_t0_lut_[same];
+        float g = 0.0f;
+        float h = 0.0f;
+        if (ctx.qacos_g_pos != nullptr) {
+            ensureExperimentalQACosT1LookupSame_(same, ctx);
+            g = ctx.qacos_base_g[same];
+            h = ctx.qacos_base_h[same];
+            size_t bit_idx = 0;
+            for (size_t w = 0; w < experimental_code_words_; ++w) {
+                uint64_t same_mask = ~(doc[w] ^ ctx.query_sign_packed[w]);
+                size_t bits_this = std::min<size_t>(64, experimental_sketch_bits_ - bit_idx);
+                if (bits_this < 64) {
+                    uint64_t mask = (uint64_t(1) << bits_this) - 1;
+                    same_mask &= mask;
+                }
+                accumulateQACosLookupWordSparseT1_(same_mask, bit_idx, same, ctx, g, h);
+                bit_idx += bits_this;
+            }
+        } else {
+            float s = experimental_qacos_sinh_t0_lut_[same];
+            float c = experimental_qacos_cosh_t0_lut_[same];
+            const bool use_approx = ctx.qacos_mills_approx;
             float sum_u_lam = 0.0f;
             float term1 = 0.0f;
             float term2 = 0.0f;
@@ -274,10 +492,336 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     float y = ((word >> b) & 1ULL) ? 1.0f : -1.0f;
                     float u = y * ctx.query_proj[bit_idx];
                     float z = s * u;
-                    float Phi = 0.5f * std::erfc(-z / sqrt2);
-                    if (Phi < 1e-9f) Phi = 1e-9f;
-                    float phi = inv_sqrt_2pi * std::exp(-0.5f * z * z);
-                    float lam = phi / Phi;
+                    float lam = computeQACosLambda_(z, use_approx);
+                    sum_u_lam += u * lam;
+                    float dzdt = c * u;
+                    float lam_prime = -lam * (z + lam);
+                    term1 += lam_prime * dzdt * dzdt;
+                    term2 += lam * z;
+                }
+            }
+            g = c * sum_u_lam;
+            h = term1 + term2;
+        }
+        if (h < -1e-9f) {
+            t = std::max(-15.0f, std::min(15.0f, t - (g / h)));
+        }
+        float score = std::tanh(t);
+        score = std::max(-1.0f, std::min(1.0f, score));
+        return static_cast<dist_t>(1.0f - score);
+    }
+
+    inline dist_t computeQACosDistanceT1_(
+        tableint internal_id,
+        const ExperimentalQueryScorerCtx& ctx) const {
+        const uint64_t* doc = experimental_doc_sign_packed_.data() + (static_cast<size_t>(internal_id) * experimental_code_words_);
+        size_t same = countExperimentalSameBits_(doc, ctx.query_sign_packed);
+        if (experimental_sketch_bits_ == 128 && experimental_code_words_ == 2) {
+            return computeQACosDistanceT1_128_WithSame_(doc, ctx, same);
+        }
+        if (experimental_sketch_bits_ == 64 && experimental_code_words_ == 1) {
+            return computeQACosDistanceT1_64_WithSame_(doc, ctx, same);
+        }
+        return computeQACosDistanceT1WithSame_(doc, ctx, same);
+    }
+
+    inline void accumulateQACosStatsWordSameMaskT1_(
+        uint64_t same_mask,
+        size_t bits_this,
+        size_t bit_offset,
+        const ExperimentalQueryScorerCtx& ctx,
+        float s,
+        float c,
+        float& sum_u_lam,
+        float& term1,
+        float& term2) const {
+        const float* query_proj = ctx.query_proj + bit_offset;
+        const float* query_proj_abs = ctx.query_proj_abs ? (ctx.query_proj_abs + bit_offset) : nullptr;
+        const bool use_approx = ctx.qacos_mills_approx;
+        for (size_t b = 0; b < bits_this; ++b) {
+            float abs_u = query_proj_abs ? query_proj_abs[b] : std::fabs(query_proj[b]);
+            float u = ((same_mask >> b) & 1ULL) ? abs_u : -abs_u;
+            float z = s * u;
+            float lam = computeQACosLambda_(z, use_approx);
+            sum_u_lam += u * lam;
+            float dzdt = c * u;
+            float lam_prime = -lam * (z + lam);
+            term1 += lam_prime * dzdt * dzdt;
+            term2 += lam * z;
+        }
+    }
+
+    inline void accumulateQACosLookupWordT1_(
+        uint64_t same_mask,
+        size_t bits_this,
+        size_t bit_offset,
+        size_t same,
+        const ExperimentalQueryScorerCtx& ctx,
+        float& g,
+        float& h) const {
+        size_t base = same * ctx.sketch_bits + bit_offset;
+        const float* g_pos = ctx.qacos_g_pos + base;
+        const float* g_neg = ctx.qacos_g_neg + base;
+        const float* term1_pos = ctx.qacos_term1_pos + base;
+        const float* term1_neg = ctx.qacos_term1_neg + base;
+        const float* term2_pos = ctx.qacos_term2_pos + base;
+        const float* term2_neg = ctx.qacos_term2_neg + base;
+        for (size_t b = 0; b < bits_this; ++b) {
+            if ((same_mask >> b) & 1ULL) {
+                g += g_pos[b];
+                h += term1_pos[b] + term2_pos[b];
+            } else {
+                g += g_neg[b];
+                h += term1_neg[b] + term2_neg[b];
+            }
+        }
+    }
+
+    inline void accumulateQACosLookupWordSparseT1_(
+        uint64_t same_mask,
+        size_t bit_offset,
+        size_t same,
+        const ExperimentalQueryScorerCtx& ctx,
+        float& g,
+        float& h) const {
+        size_t base = same * ctx.sketch_bits + bit_offset;
+        const float* g_pos = ctx.qacos_g_pos + base;
+        const float* g_neg = ctx.qacos_g_neg + base;
+        const float* term1_pos = ctx.qacos_term1_pos + base;
+        const float* term1_neg = ctx.qacos_term1_neg + base;
+        const float* term2_pos = ctx.qacos_term2_pos + base;
+        const float* term2_neg = ctx.qacos_term2_neg + base;
+        while (same_mask) {
+            unsigned bit = static_cast<unsigned>(__builtin_ctzll(same_mask));
+            g += g_pos[bit] - g_neg[bit];
+            h += (term1_pos[bit] + term2_pos[bit]) - (term1_neg[bit] + term2_neg[bit]);
+            same_mask &= (same_mask - 1);
+        }
+    }
+
+    inline void accumulateQACosLookup128SparseT1_(
+        uint64_t same0,
+        uint64_t same1,
+        size_t same,
+        const ExperimentalQueryScorerCtx& ctx,
+        float& g,
+        float& h) const {
+        const size_t base = same * 128;
+        const float* g_pos0 = ctx.qacos_g_pos + base;
+        const float* g_neg0 = ctx.qacos_g_neg + base;
+        const float* t1_pos0 = ctx.qacos_term1_pos + base;
+        const float* t1_neg0 = ctx.qacos_term1_neg + base;
+        const float* t2_pos0 = ctx.qacos_term2_pos + base;
+        const float* t2_neg0 = ctx.qacos_term2_neg + base;
+        while (same0) {
+            unsigned bit = static_cast<unsigned>(__builtin_ctzll(same0));
+            g += g_pos0[bit] - g_neg0[bit];
+            h += (t1_pos0[bit] + t2_pos0[bit]) - (t1_neg0[bit] + t2_neg0[bit]);
+            same0 &= (same0 - 1);
+        }
+
+        const float* g_pos1 = g_pos0 + 64;
+        const float* g_neg1 = g_neg0 + 64;
+        const float* t1_pos1 = t1_pos0 + 64;
+        const float* t1_neg1 = t1_neg0 + 64;
+        const float* t2_pos1 = t2_pos0 + 64;
+        const float* t2_neg1 = t2_neg0 + 64;
+        while (same1) {
+            unsigned bit = static_cast<unsigned>(__builtin_ctzll(same1));
+            g += g_pos1[bit] - g_neg1[bit];
+            h += (t1_pos1[bit] + t2_pos1[bit]) - (t1_neg1[bit] + t2_neg1[bit]);
+            same1 &= (same1 - 1);
+        }
+    }
+
+    inline dist_t computeQACosDistanceT1_64_WithSame_(
+        const uint64_t* doc,
+        const ExperimentalQueryScorerCtx& ctx,
+        size_t same) const {
+        uint64_t same0 = ~(doc[0] ^ ctx.query_sign_packed[0]);
+        float t = experimental_qacos_t0_lut_[same];
+        float g = 0.0f;
+        float h = 0.0f;
+        if (ctx.qacos_g_pos != nullptr) {
+            ensureExperimentalQACosT1LookupSame_(same, ctx);
+            g = ctx.qacos_base_g[same];
+            h = ctx.qacos_base_h[same];
+            accumulateQACosLookupWordSparseT1_(same0, 0, same, ctx, g, h);
+        } else {
+            float s = experimental_qacos_sinh_t0_lut_[same];
+            float c = experimental_qacos_cosh_t0_lut_[same];
+            float sum_u_lam = 0.0f;
+            float term1 = 0.0f;
+            float term2 = 0.0f;
+            accumulateQACosStatsWordSameMaskT1_(same0, 64, 0, ctx, s, c, sum_u_lam, term1, term2);
+            g = c * sum_u_lam;
+            h = term1 + term2;
+        }
+        if (h < -1e-9f) {
+            t = std::max(-15.0f, std::min(15.0f, t - (g / h)));
+        }
+        float score = std::tanh(t);
+        score = std::max(-1.0f, std::min(1.0f, score));
+        return static_cast<dist_t>(1.0f - score);
+    }
+
+    inline dist_t computeQACosDistanceT1_64_(
+        const uint64_t* doc,
+        const ExperimentalQueryScorerCtx& ctx) const {
+        uint64_t same0 = ~(doc[0] ^ ctx.query_sign_packed[0]);
+        size_t same = static_cast<size_t>(__builtin_popcountll(same0));
+        return computeQACosDistanceT1_64_WithSame_(doc, ctx, same);
+    }
+
+    inline dist_t computeQACosDistanceT1_64_Profile_(
+        const uint64_t* doc,
+        const ExperimentalQueryScorerCtx& ctx,
+        ExperimentalRefineProfileStats* profile) const {
+        auto t0 = std::chrono::steady_clock::now();
+        uint64_t same0 = ~(doc[0] ^ ctx.query_sign_packed[0]);
+        size_t same = static_cast<size_t>(__builtin_popcountll(same0));
+        float t = experimental_qacos_t0_lut_[same];
+        auto t1 = std::chrono::steady_clock::now();
+        float g = 0.0f;
+        float h = 0.0f;
+        if (ctx.qacos_g_pos != nullptr) {
+            ensureExperimentalQACosT1LookupSame_(same, ctx);
+            g = ctx.qacos_base_g[same];
+            h = ctx.qacos_base_h[same];
+            accumulateQACosLookupWordSparseT1_(same0, 0, same, ctx, g, h);
+        } else {
+            float s = experimental_qacos_sinh_t0_lut_[same];
+            float c = experimental_qacos_cosh_t0_lut_[same];
+            float sum_u_lam = 0.0f;
+            float term1 = 0.0f;
+            float term2 = 0.0f;
+            accumulateQACosStatsWordSameMaskT1_(same0, 64, 0, ctx, s, c, sum_u_lam, term1, term2);
+            g = c * sum_u_lam;
+            h = term1 + term2;
+        }
+        if (h < -1e-9f) {
+            t = std::max(-15.0f, std::min(15.0f, t - (g / h)));
+        }
+        float score = std::tanh(t);
+        score = std::max(-1.0f, std::min(1.0f, score));
+        auto t2 = std::chrono::steady_clock::now();
+        if (profile) {
+            profile->scorer_calls += 1;
+            profile->scorer_same_count_ns += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+            profile->scorer_core_ns += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count());
+            profile->scorer_total_ns += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t0).count());
+        }
+        return static_cast<dist_t>(1.0f - score);
+    }
+
+    inline dist_t computeQACosDistanceT1_128_WithSame_(
+        const uint64_t* doc,
+        const ExperimentalQueryScorerCtx& ctx,
+        size_t same) const {
+        uint64_t same0 = ~(doc[0] ^ ctx.query_sign_packed[0]);
+        uint64_t same1 = ~(doc[1] ^ ctx.query_sign_packed[1]);
+        float t = experimental_qacos_t0_lut_[same];
+        float g = 0.0f;
+        float h = 0.0f;
+        if (ctx.qacos_g_pos != nullptr) {
+            ensureExperimentalQACosT1LookupSame_(same, ctx);
+            g = ctx.qacos_base_g[same];
+            h = ctx.qacos_base_h[same];
+            accumulateQACosLookup128SparseT1_(same0, same1, same, ctx, g, h);
+        } else {
+            float s = experimental_qacos_sinh_t0_lut_[same];
+            float c = experimental_qacos_cosh_t0_lut_[same];
+            float sum_u_lam = 0.0f;
+            float term1 = 0.0f;
+            float term2 = 0.0f;
+            accumulateQACosStatsWordSameMaskT1_(same0, 64, 0, ctx, s, c, sum_u_lam, term1, term2);
+            accumulateQACosStatsWordSameMaskT1_(same1, 64, 64, ctx, s, c, sum_u_lam, term1, term2);
+            g = c * sum_u_lam;
+            h = term1 + term2;
+        }
+        if (h < -1e-9f) {
+            t = std::max(-15.0f, std::min(15.0f, t - (g / h)));
+        }
+        float score = std::tanh(t);
+        score = std::max(-1.0f, std::min(1.0f, score));
+        return static_cast<dist_t>(1.0f - score);
+    }
+
+    inline dist_t computeQACosDistanceT1_128_(
+        const uint64_t* doc,
+        const ExperimentalQueryScorerCtx& ctx) const {
+        uint64_t same0 = ~(doc[0] ^ ctx.query_sign_packed[0]);
+        uint64_t same1 = ~(doc[1] ^ ctx.query_sign_packed[1]);
+        size_t same = static_cast<size_t>(__builtin_popcountll(same0))
+                    + static_cast<size_t>(__builtin_popcountll(same1));
+        return computeQACosDistanceT1_128_WithSame_(doc, ctx, same);
+    }
+
+    inline dist_t computeQACosDistanceT1_128_Profile_(
+        const uint64_t* doc,
+        const ExperimentalQueryScorerCtx& ctx,
+        ExperimentalRefineProfileStats* profile) const {
+        auto t0 = std::chrono::steady_clock::now();
+        uint64_t same0 = ~(doc[0] ^ ctx.query_sign_packed[0]);
+        uint64_t same1 = ~(doc[1] ^ ctx.query_sign_packed[1]);
+        size_t same = static_cast<size_t>(__builtin_popcountll(same0))
+                    + static_cast<size_t>(__builtin_popcountll(same1));
+        float t = experimental_qacos_t0_lut_[same];
+        auto t1 = std::chrono::steady_clock::now();
+        float g = 0.0f;
+        float h = 0.0f;
+        if (ctx.qacos_g_pos != nullptr) {
+            ensureExperimentalQACosT1LookupSame_(same, ctx);
+            g = ctx.qacos_base_g[same];
+            h = ctx.qacos_base_h[same];
+            accumulateQACosLookup128SparseT1_(same0, same1, same, ctx, g, h);
+        } else {
+            float s = experimental_qacos_sinh_t0_lut_[same];
+            float c = experimental_qacos_cosh_t0_lut_[same];
+            float sum_u_lam = 0.0f;
+            float term1 = 0.0f;
+            float term2 = 0.0f;
+            accumulateQACosStatsWordSameMaskT1_(same0, 64, 0, ctx, s, c, sum_u_lam, term1, term2);
+            accumulateQACosStatsWordSameMaskT1_(same1, 64, 64, ctx, s, c, sum_u_lam, term1, term2);
+            g = c * sum_u_lam;
+            h = term1 + term2;
+        }
+        if (h < -1e-9f) {
+            t = std::max(-15.0f, std::min(15.0f, t - (g / h)));
+        }
+        float score = std::tanh(t);
+        score = std::max(-1.0f, std::min(1.0f, score));
+        auto t2 = std::chrono::steady_clock::now();
+        if (profile) {
+            profile->scorer_calls += 1;
+            profile->scorer_same_count_ns += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+            profile->scorer_core_ns += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count());
+            profile->scorer_total_ns += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t0).count());
+        }
+        return static_cast<dist_t>(1.0f - score);
+    }
+
+    inline dist_t computeQACosDistanceWithSame_(
+        const uint64_t* doc,
+        const ExperimentalQueryScorerCtx& ctx,
+        size_t same) const {
+        float t = experimental_qacos_t0_lut_[same];
+        const bool use_approx = ctx.qacos_mills_approx;
+        for (size_t iter = 0; iter < ctx.qacos_iters; ++iter) {
+            float s = iter == 0 ? experimental_qacos_sinh_t0_lut_[same] : std::sinh(t);
+            float c = iter == 0 ? experimental_qacos_cosh_t0_lut_[same] : std::cosh(t);
+            float sum_u_lam = 0.0f;
+            float term1 = 0.0f;
+            float term2 = 0.0f;
+            size_t bit_idx = 0;
+            for (size_t w = 0; w < experimental_code_words_; ++w) {
+                uint64_t word = doc[w];
+                size_t bits_this = std::min<size_t>(64, experimental_sketch_bits_ - bit_idx);
+                for (size_t b = 0; b < bits_this; ++b, ++bit_idx) {
+                    float y = ((word >> b) & 1ULL) ? 1.0f : -1.0f;
+                    float u = y * ctx.query_proj[bit_idx];
+                    float z = s * u;
+                    float lam = computeQACosLambda_(z, use_approx);
                     sum_u_lam += u * lam;
                     float dzdt = c * u;
                     float lam_prime = -lam * (z + lam);
@@ -294,6 +838,14 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         float score = std::tanh(t);
         score = std::max(-1.0f, std::min(1.0f, score));
         return static_cast<dist_t>(1.0f - score);
+    }
+
+    inline dist_t computeQACosDistance_(
+        tableint internal_id,
+        const ExperimentalQueryScorerCtx& ctx) const {
+        const uint64_t* doc = experimental_doc_sign_packed_.data() + (static_cast<size_t>(internal_id) * experimental_code_words_);
+        size_t same = countExperimentalSameBits_(doc, ctx.query_sign_packed);
+        return computeQACosDistanceWithSame_(doc, ctx, same);
     }
 
     inline dist_t computeExperimentalSearchDistance_(
@@ -315,7 +867,65 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         if (ctx.query_proj == nullptr) {
             throw std::runtime_error("QA-Cos scorer requires query projections");
         }
-        return computeQACosDistance_(internal_id, ctx);
+        const uint64_t* doc = experimental_doc_sign_packed_.data() + (static_cast<size_t>(internal_id) * experimental_code_words_);
+        size_t same = countExperimentalSameBits_(doc, ctx.query_sign_packed);
+        if (scorer == ExperimentalSearchScorer::kQACosGated) {
+            if (ctx.qacos_gate_min_same < 0 || ctx.qacos_gate_max_same < 0) {
+                throw std::runtime_error("QA-Cos gated scorer requires same-count gate bounds");
+            }
+            if (static_cast<int>(same) < ctx.qacos_gate_min_same || static_cast<int>(same) > ctx.qacos_gate_max_same) {
+                return computeSimhashBaselineDistanceFromSame_(same);
+            }
+        }
+        if (ctx.qacos_iters == 1) {
+            if (experimental_sketch_bits_ == 128 && experimental_code_words_ == 2) {
+                return computeQACosDistanceT1_128_WithSame_(doc, ctx, same);
+            }
+            if (experimental_sketch_bits_ == 64 && experimental_code_words_ == 1) {
+                return computeQACosDistanceT1_64_WithSame_(doc, ctx, same);
+            }
+            return computeQACosDistanceT1WithSame_(doc, ctx, same);
+        }
+        return computeQACosDistanceWithSame_(doc, ctx, same);
+    }
+
+    inline dist_t computeExperimentalSearchDistanceProfile_(
+        tableint internal_id,
+        const ExperimentalQueryScorerCtx& ctx,
+        ExperimentalSearchScorer scorer,
+        ExperimentalRefineProfileStats* profile) const {
+        if (experimental_doc_sign_packed_.empty()) {
+            throw std::runtime_error("Experimental doc sign sketches have not been attached");
+        }
+        if (ctx.query_sign_packed == nullptr) {
+            throw std::runtime_error("Experimental query sign sketch is required");
+        }
+        if (ctx.code_words != experimental_code_words_ || ctx.sketch_bits != experimental_sketch_bits_) {
+            throw std::runtime_error("Experimental query sketch shape does not match attached document sketches");
+        }
+        if (scorer == ExperimentalSearchScorer::kSimhashBaseline) {
+            return computeSimhashBaselineDistance_(internal_id, ctx);
+        }
+        if (ctx.query_proj == nullptr) {
+            throw std::runtime_error("QA-Cos scorer requires query projections");
+        }
+        const uint64_t* doc = experimental_doc_sign_packed_.data() + (static_cast<size_t>(internal_id) * experimental_code_words_);
+        if (scorer == ExperimentalSearchScorer::kQACos && ctx.qacos_iters == 1) {
+            if (experimental_sketch_bits_ == 128 && experimental_code_words_ == 2) {
+                return computeQACosDistanceT1_128_Profile_(doc, ctx, profile);
+            }
+            if (experimental_sketch_bits_ == 64 && experimental_code_words_ == 1) {
+                return computeQACosDistanceT1_64_Profile_(doc, ctx, profile);
+            }
+        }
+        auto t0 = std::chrono::steady_clock::now();
+        dist_t out = computeExperimentalSearchDistance_(internal_id, ctx, scorer);
+        auto t1 = std::chrono::steady_clock::now();
+        if (profile) {
+            profile->scorer_calls += 1;
+            profile->scorer_total_ns += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        }
+        return out;
     }
 
 

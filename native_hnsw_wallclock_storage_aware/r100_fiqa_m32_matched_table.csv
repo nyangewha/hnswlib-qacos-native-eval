@@ -1,0 +1,4 @@
+dataset,bits,M,target_metric,target_value,scorer,chosen_efSearch,achieved_metric
+fiqa,128,32,Recall@100,0.8,simhash,1500,0.8185
+fiqa,128,32,Recall@100,0.8,qacos_gated,700,0.824875
+fiqa,128,32,Recall@100,0.9,qacos_gated,1500,0.910125
