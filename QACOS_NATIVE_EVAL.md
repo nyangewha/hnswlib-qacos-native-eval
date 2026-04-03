@@ -100,7 +100,7 @@ python run_native_hnsw_qacos_eval.py \
   --datasets arguana,fiqa,nfcorpus,scifact \
   --graph_M_values 16,32 \
   --sketch_bits 64,128 \
-  --ef_search_values 20,50 \
+  --ef_search_values 50 \
   --max_queries 80 \
   --seed 0 \
   --qacos_iters 2 \
@@ -129,7 +129,7 @@ The runner writes:
 - Datasets: ArguAna, FiQA, NFCorpus, SciFact
 - Native backend: official `hnswlib`
 - Embeddings: L2-normalized 768-d MPNet float embeddings
-- Search settings: `M in {16,32}`, `efConstruction=200`, `efSearch in {20,50}`
+- Search settings: `M in {16,32}`, `efConstruction=200`, `efSearch=50`
 - Sketch bits: `64`, `128`
 - QA-Cos iterations: `T=2`
 - Query cap: `80` per dataset

@@ -15,7 +15,6 @@
     128
   ],
   "ef_search_values": [
-    20,
     50
   ],
   "visited_budget": "not_exposed_natively",
@@ -34,5 +33,5 @@
     500
   ],
   "candidate_pool_definition": "bottom-layer distinct nodes whose experimental scorer distance was actually computed",
-  "num_rows": 5120
+  "num_rows": 2560
 }

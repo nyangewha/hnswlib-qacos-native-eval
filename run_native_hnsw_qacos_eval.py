@@ -342,7 +342,7 @@ def main() -> None:
     parser.add_argument("--datasets", type=str, default="arguana,nfcorpus,scifact")
     parser.add_argument("--graph_M_values", type=str, default="16,32")
     parser.add_argument("--sketch_bits", type=str, default="64,128")
-    parser.add_argument("--ef_search_values", type=str, default="20,50")
+    parser.add_argument("--ef_search_values", type=str, default="50")
     parser.add_argument("--target_recalls", type=str, default="0.8,0.9")
     parser.add_argument("--prefix_grid", type=str, default="10,20,50,100,150,200,300,500")
     parser.add_argument("--seed", type=int, default=0)
