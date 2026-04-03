@@ -97,7 +97,7 @@ Example command:
 python run_native_hnsw_qacos_eval.py \
   --cache_dir /path/to/emb_cache \
   --out_dir ./native_hnsw_candidate_full_t2 \
-  --datasets arguana,nfcorpus,scifact \
+  --datasets arguana,fiqa,nfcorpus,scifact \
   --graph_M_values 16,32 \
   --sketch_bits 64,128 \
   --ef_search_values 20,50 \
