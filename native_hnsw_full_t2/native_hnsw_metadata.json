@@ -2,6 +2,7 @@
   "cache_dir": "emb_cache",
   "datasets": [
     "arguana",
+    "fiqa",
     "nfcorpus",
     "scifact"
   ],
@@ -22,5 +23,5 @@
   "qacos_iters": 2,
   "max_queries": 80,
   "num_threads": 1,
-  "num_rows": 3840
+  "num_rows": 5120
 }

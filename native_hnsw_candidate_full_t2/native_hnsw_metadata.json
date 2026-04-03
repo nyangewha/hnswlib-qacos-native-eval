@@ -2,6 +2,7 @@
   "cache_dir": "emb_cache",
   "datasets": [
     "arguana",
+    "fiqa",
     "nfcorpus",
     "scifact"
   ],
@@ -33,5 +34,5 @@
     500
   ],
   "candidate_pool_definition": "bottom-layer distinct nodes whose experimental scorer distance was actually computed",
-  "num_rows": 3840
+  "num_rows": 5120
 }

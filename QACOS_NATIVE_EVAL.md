@@ -126,7 +126,7 @@ The runner writes:
 
 ## Experimental Settings
 
-- Datasets: ArguAna, NFCorpus, SciFact, FiQA (add-on summary)
+- Datasets: ArguAna, FiQA, NFCorpus, SciFact
 - Native backend: official `hnswlib`
 - Embeddings: L2-normalized 768-d MPNet float embeddings
 - Search settings: `M in {16,32}`, `efSearch in {20,50}`
@@ -146,11 +146,6 @@ Only compact validation artifacts are kept in this repository.
 ### Candidate-Count Efficiency
 - `native_hnsw_candidate_full_t2/native_hnsw_candidate_efficiency_summary.csv`
 - `native_hnsw_candidate_full_t2/native_hnsw_metadata.json`
-
-### FiQA Add-on Summary
-- `native_hnsw_fiqa_t2/native_hnsw_summary.csv`
-- `native_hnsw_fiqa_t2/native_hnsw_candidate_efficiency_summary.csv`
-- `native_hnsw_fiqa_t2/native_hnsw_metadata.json`
 
 Raw per-query CSVs and smoke-test outputs are intentionally omitted to keep the repository lightweight.
 
