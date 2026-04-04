@@ -59,7 +59,7 @@ These follow-up variants are included as practical engineering experiments and s
 - `run_native_hnsw_qacos_eval.py`
   - evaluation runner for the native scorer-replacement experiment
 - `run_native_hnsw_storage_aware_matched_eval.py`
-  - storage-aware matched-recall rerank runner
+  - storage-aware two-stage rerank runner
 
 ## Reproducing From These Files
 
@@ -125,7 +125,7 @@ Native HNSW layer structures (top-to-bottom node counts):
 
 ## Practical wall-clock follow-up settings
 
-### A. Gated matched-recall wall-clock
+### A. Gated practical wall-clock setting
 
 - Datasets: NFCorpus, FiQA
 - Bits: `128`
@@ -135,12 +135,13 @@ Native HNSW layer structures (top-to-bottom node counts):
 - QA-Cos iterations: `T=1`
 - `mills_approx = True`
 - gate band: `same in [72,96]`
-- matched operating points are first selected under native HNSW search and then reevaluated in the storage-aware follow-up below
+- the practical question is whether a slower but more accurate coarse decoder can still help at the system level once downstream full-vector accesses become more costly
 
 ### B. Storage-aware rerank timing
 
 - native HNSW search remains unchanged and in memory
 - exact rerank uses file-backed normalized full-vector stores
+- the goal is not to estimate physical SSD cache-miss rates directly, but to move beyond a trivially warm fully in-memory rerank setting and make downstream full-vector access cost more visible
 - two storage modes are reported:
   - `warm_cache`
   - `cache_limited`
@@ -195,6 +196,7 @@ Included files:
   - storage-aware FiQA `Recall@100` summary
 
 Matched operating points such as `efSearch=1500` vs `700` in the FiQA `Recall@100` follow-up are reported directly in the rebuttal text; the release keeps only the compact storage-aware follow-up summaries.
+The release keeps only the compact storage-aware follow-up summaries. Operating-point choices discussed in the rebuttal are stated directly in the text rather than exposed here as separate search-sweep artifacts.
 
 Raw per-query CSVs, smoke-test outputs, and larger intermediate files are intentionally omitted to keep the repository lightweight.
 
@@ -208,9 +210,9 @@ This metric uses the final native HNSW `top_candidates` result and measures fron
 
 This metric uses the **bottom-layer visited-and-scored distinct node pool**. Candidates are sorted by the same scorer, and we measure how many coarse candidates must be exact-reranked to reach a target recall.
 
-### 3. Storage-aware matched-recall wall-clock metric
+### 3. Storage-aware two-stage wall-clock metric
 
-This metric asks whether two methods can reach the **same target retrieval quality** at different `efSearch` values and different end-to-end query cost.
+This metric asks whether a slower but more accurate coarse decoder can still improve overall query cost in a two-stage retrieval setting once downstream exact full-vector accesses become more expensive.
 
 For the storage-aware setting, the main total is:
 
