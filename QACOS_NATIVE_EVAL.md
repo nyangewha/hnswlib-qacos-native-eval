@@ -134,7 +134,7 @@ Native HNSW layer structures (top-to-bottom node counts):
 - Threads: `1`
 - QA-Cos iterations: `T=1`
 - `mills_approx = True`
-- gate band: `same in [72,96]`
+- gate band: `same in [74,96]`
 - the practical question is whether a slower but more accurate coarse decoder can still help at the system level once downstream full-vector accesses become more costly
 
 ### B. Storage-aware rerank timing
@@ -195,8 +195,7 @@ Included files:
 - `storage_aware_summary_r100_fiqa_m32.csv`
   - storage-aware FiQA `Recall@100` summary
 
-Matched operating points such as `efSearch=1500` vs `700` in the FiQA `Recall@100` follow-up are reported directly in the rebuttal text; the release keeps only the compact storage-aware follow-up summaries.
-The release keeps only the compact storage-aware follow-up summaries. Operating-point choices discussed in the rebuttal are stated directly in the text rather than exposed here as separate search-sweep artifacts.
+Operating-point choices discussed in the rebuttal, such as `efSearch=1300` vs `700` in the FiQA `Recall@100 >= 0.8` follow-up, are stated directly in the text rather than exposed here as separate search-sweep artifacts.
 
 Raw per-query CSVs, smoke-test outputs, and larger intermediate files are intentionally omitted to keep the repository lightweight.
 
