@@ -58,7 +58,7 @@ These follow-up variants are included as practical engineering experiments and s
   - Python binding exposure for experimental outputs
 - `run_native_hnsw_qacos_eval.py`
   - evaluation runner for the native scorer-replacement experiment
-- `run_native_hnsw_storage_aware_matched_eval.py`
+- `run_native_hnsw_storage_aware_eval.py`
   - storage-aware two-stage rerank runner
 
 ## Reproducing From These Files
@@ -80,7 +80,7 @@ Copy these files into the matching locations inside the official `hnswlib` check
 - `hnswlib/hnswalg.h` -> `./hnswlib/hnswalg.h`
 - `python_bindings/bindings.cpp` -> `./python_bindings/bindings.cpp`
 - `run_native_hnsw_qacos_eval.py` -> `./run_native_hnsw_qacos_eval.py`
-- `run_native_hnsw_storage_aware_matched_eval.py` -> `./run_native_hnsw_storage_aware_matched_eval.py`
+- `run_native_hnsw_storage_aware_eval.py` -> `./run_native_hnsw_storage_aware_eval.py`
 
 ### Step 3. Build the patched Python package
 
