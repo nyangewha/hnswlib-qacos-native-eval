@@ -301,7 +301,7 @@ def summarize_setting(rows: List[Dict[str, object]]) -> Dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache_dir", type=str, default="/Users/nyang/Library/CloudStorage/OneDrive-이화여자대학교/Code/simhash/emb_cache")
-    parser.add_argument("--matched_table", type=str, default="/tmp/hnswlib-wallclock-matched-r10-gated72_96/matched_recall_r10_table.csv")
+    parser.add_argument("--matched_table", type=str, default="/tmp/hnswlib-wallclock-matched-r10-gated74_96/matched_recall_r10_table.csv")
     parser.add_argument("--out_dir", type=str, default="/tmp/hnswlib-storage-aware-matched")
     parser.add_argument("--storage_root", type=str, default="/tmp/hnswlib-storage-aware")
     parser.add_argument("--model_tag", type=str, default=MODEL_TAG_DEFAULT)
@@ -318,7 +318,7 @@ def main() -> None:
     parser.add_argument("--storage_target_gb", type=float, default=1.5)
     parser.add_argument("--cache_buster_gb", type=float, default=1.0)
     parser.add_argument("--mills_approx", action="store_true")
-    parser.add_argument("--qacos_gate_min_same", type=int, default=72)
+    parser.add_argument("--qacos_gate_min_same", type=int, default=74)
     parser.add_argument("--qacos_gate_max_same", type=int, default=96)
     args = parser.parse_args()
 
