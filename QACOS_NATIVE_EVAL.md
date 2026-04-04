@@ -58,8 +58,6 @@ These follow-up variants are included as practical engineering experiments and s
   - Python binding exposure for experimental outputs
 - `run_native_hnsw_qacos_eval.py`
   - evaluation runner for the native scorer-replacement experiment
-- `run_native_hnsw_wallclock_eval.py`
-  - same-setting / matched-recall wall-clock runner
 - `run_native_hnsw_storage_aware_matched_eval.py`
   - storage-aware matched-recall rerank runner
 
@@ -82,7 +80,6 @@ Copy these files into the matching locations inside the official `hnswlib` check
 - `hnswlib/hnswalg.h` -> `./hnswlib/hnswalg.h`
 - `python_bindings/bindings.cpp` -> `./python_bindings/bindings.cpp`
 - `run_native_hnsw_qacos_eval.py` -> `./run_native_hnsw_qacos_eval.py`
-- `run_native_hnsw_wallclock_eval.py` -> `./run_native_hnsw_wallclock_eval.py`
 - `run_native_hnsw_storage_aware_matched_eval.py` -> `./run_native_hnsw_storage_aware_matched_eval.py`
 
 ### Step 3. Build the patched Python package
@@ -138,8 +135,7 @@ Native HNSW layer structures (top-to-bottom node counts):
 - QA-Cos iterations: `T=1`
 - `mills_approx = True`
 - gate band: `same in [72,96]`
-- matched target: `Recall@10`
-- target values: `0.8`, `0.9`
+- matched operating points are first selected under native HNSW search and then reevaluated in the storage-aware follow-up below
 
 ### B. Storage-aware rerank timing
 
@@ -193,18 +189,12 @@ All compact follow-up wall-clock files are stored in:
 
 Included files:
 
-- `matched_recall_r10_table.csv`
-  - matched `Recall@10` in-memory chosen `efSearch` table for `simhash` vs `qacos_gated`
 - `storage_aware_summary_r10.csv`
   - storage-aware matched `Recall@10` summary for `warm_cache` and `cache_limited`
-- `storage_aware_comparison_r10.csv`
-  - compact direct comparison table for `simhash` vs `qacos_gated`
-- `r100_fiqa_m32_search_summary.csv`
-  - FiQA `Recall@100` search-side reachability / chosen `efSearch` summary
-- `r100_fiqa_m32_matched_table.csv`
-  - compact matched `Recall@100` table used for storage-aware rerank timing
 - `storage_aware_summary_r100_fiqa_m32.csv`
   - storage-aware FiQA `Recall@100` summary
+
+Matched operating points such as `efSearch=1500` vs `700` in the FiQA `Recall@100` follow-up are reported directly in the rebuttal text; the release keeps only the compact storage-aware follow-up summaries.
 
 Raw per-query CSVs, smoke-test outputs, and larger intermediate files are intentionally omitted to keep the repository lightweight.
 
@@ -218,7 +208,7 @@ This metric uses the final native HNSW `top_candidates` result and measures fron
 
 This metric uses the **bottom-layer visited-and-scored distinct node pool**. Candidates are sorted by the same scorer, and we measure how many coarse candidates must be exact-reranked to reach a target recall.
 
-### 3. Matched-recall wall-clock metric
+### 3. Storage-aware matched-recall wall-clock metric
 
 This metric asks whether two methods can reach the **same target retrieval quality** at different `efSearch` values and different end-to-end query cost.
 
