@@ -32,7 +32,7 @@ The runners expect cached L2-normalized 768-d MPNet document/query embeddings un
 
 ## Question Answered
 
-This section addresses the request for evaluation inside an **actual native HNSW implementation**.
+This section addresses Reviewer 8DVT's request for evaluation inside an **actual native HNSW implementation** and Reviewer 9crG's practical-scope / NNS-evidence request for a realistic search-time experiment beyond cosine-estimation quality alone.
 
 Runner used for this section: `run_native_hnsw_qacos_eval.py`
 
