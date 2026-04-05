@@ -124,7 +124,7 @@ This follow-up uses a practical gated variant:
 - `qacos_gated`: apply QA-Cos only inside a same-count ambiguity band, and fall back to the SimHash baseline outside that band
 - reported band: `same in [74,96]`
 - QA-Cos iterations: `T=1`
-- `mills_approx = True`: replace the exact Gaussian Mills-ratio evaluation used inside the QA-Cos Newton-step likelihood/derivative calculations with a standard piecewise rational/polynomial Mills-ratio approximation, reducing scorer overhead during search-time decoding
+- `mills_approx = True`: replace the exact Gaussian Mills-ratio evaluation used inside the QA-Cos Newton-step likelihood/derivative calculations with a standard piecewise rational/polynomial Mills-ratio approximation, reducing scorer overhead during search-time decoding at the cost of a possible small quality drop; the reported storage-aware wall-clock results reflect this practical speed/quality trade-off
 
 ## Storage-Aware Setup
 
