@@ -34,6 +34,8 @@ The runners expect cached L2-normalized 768-d MPNet document/query embeddings un
 
 This section addresses the request for evaluation inside an **actual native HNSW implementation**.
 
+Runner used for this section: `run_native_hnsw_qacos_eval.py`
+
 ## Experimental Scope
 
 - official native backend: `hnswlib`
@@ -116,6 +118,8 @@ Metric meanings:
 This section addresses the narrower question of whether a **slower but more accurate first-stage decoder** can still help end-to-end latency in a realistic two-stage setting once downstream full-vector accesses become more expensive.
 
 Because QA-Cos is a **decoder-side refinement** rather than a standalone ANN method, this should be interpreted as a scope-aligned two-stage follow-up rather than as a standard ANN-benchmark-style full-system comparison.
+
+Runner used for this section: `run_native_hnsw_storage_aware_eval.py`
 
 ## Practical Variant Used
 
