@@ -3,9 +3,9 @@
 This release contains two distinct groups of artifacts:
 
 1. **Reviewers 8DVT and 9crG: native scorer-replacement evidence inside official `hnswlib`**
-2. **Reviewer 9crG: storage-aware end-to-end wall-clock follow-up**
+2. **Reviewer 9crG: storage-aware end-to-end wall-clock evaluation**
 
-The first is the main controlled experiment: native HNSW construction and search mechanics are unchanged, and only the search-time scorer is changed. The second is a narrower practical follow-up for a two-stage retrieval setting.
+The first is the main controlled experiment: native HNSW construction and search mechanics are unchanged, and only the search-time scorer is changed. The second is a narrower practical evaluation for a two-stage retrieval setting.
 
 This release is **not** a new ANN system and **not** a redesign of HNSW.
 
@@ -116,19 +116,19 @@ Metric meanings:
 
 ---
 
-# Section B. Reviewer 9crG: Storage-aware end-to-end wall-clock follow-up
+# Section B. Reviewer 9crG: Storage-aware end-to-end wall-clock evaluation
 
 ## Question Answered
 
 This section addresses the narrower question of whether a **slower but more accurate first-stage decoder** can still help end-to-end latency in a realistic two-stage setting once downstream full-vector accesses become more expensive.
 
-Because QA-Cos is a **decoder-side refinement** rather than a standalone ANN method, this should be interpreted as a scope-aligned two-stage follow-up rather than as a standard ANN-benchmark-style full-system comparison.
+Because QA-Cos is a **decoder-side refinement** rather than a standalone ANN method, this should be interpreted as a scope-aligned two-stage evaluation rather than as a standard ANN-benchmark-style full-system comparison.
 
 Runner used for this section: `run_native_hnsw_storage_aware_eval.py`
 
 ## Practical Setting Used
 
-This follow-up uses a practical gated QA-Cos setting:
+This section uses a practical gated QA-Cos setting:
 
 - `qacos_gated`: apply QA-Cos only inside a same-count ambiguity band, and fall back to the SimHash baseline outside that band
 - reported band: `same in [74,96]`
@@ -146,7 +146,7 @@ This follow-up uses a practical gated QA-Cos setting:
 - in `cache_limited`, the normalized full-vector store is first expanded into a larger replicated file-backed memmap, and rerank reads use query-dependent replica selection so repeated timed runs are less likely to hit the same trivially warm physical rows
 - before each timed `cache_limited` run, a separate file-backed cache-buster buffer is touched to add cache pressure and make downstream full-vector access cost more visible than in the warm-cache setup
 
-For the focused FiQA `Recall@100` follow-up:
+For the focused FiQA `Recall@100` setting:
 
 - dataset: `FiQA`
 - bits: `128`
@@ -156,7 +156,7 @@ For the focused FiQA `Recall@100` follow-up:
 
 ## Headline Results
 
-Focused `FiQA, 128-bit, M=32` follow-up:
+Focused `FiQA, 128-bit, M=32` setting:
 
 Representative figure:
 
@@ -173,7 +173,7 @@ Representative figure:
 
 Interpretation:
 
-- this follow-up is **not** intended to show that QA-Cos is a universal winner
+- this evaluation is **not** intended to show that QA-Cos is a universal winner
 - it is intended to show that realistic two-stage settings can exist in which a slower but more accurate first-stage scorer still yields lower end-to-end latency
 
 ## Files for Reviewer 9crG
@@ -185,11 +185,11 @@ Compact wall-clock artifacts are stored in:
 Included files:
 
 - `storage_aware_summary_r10.csv`
-  - storage-aware `Recall@10` follow-up summary for `warm_cache` and `cache_limited`
+  - storage-aware `Recall@10` summary for `warm_cache` and `cache_limited`
 - `storage_aware_summary_r100_fiqa_m32.csv`
   - focused FiQA `Recall@100` storage-aware summary
 - `storage_aware_r100_fiqa_m32.png`
-  - compact summary figure for the focused FiQA `Recall@100` follow-up
+  - compact summary figure for the focused FiQA `Recall@100` setting
 
 Raw per-query CSVs, smoke-test outputs, and larger intermediates are intentionally omitted to keep the release lightweight.
 
@@ -198,4 +198,4 @@ Raw per-query CSVs, smoke-test outputs, and larger intermediates are intentional
 ## Short Takeaway
 
 - **Section A / Reviewers 8DVT and 9crG:** in a strict native scorer-replacement experiment inside official `hnswlib`, QA-Cos improves frontier quality and candidate efficiency while leaving native HNSW construction unchanged.
-- **Section B / Reviewer 9crG:** in a narrower storage-aware two-stage follow-up, a practical gated QA-Cos setting can reduce search effort and downstream reread burden enough to improve end-to-end latency in some settings.
+- **Section B / Reviewer 9crG:** in a narrower storage-aware two-stage evaluation, a practical gated QA-Cos setting can reduce search effort and downstream reread burden enough to improve end-to-end latency in some settings.
