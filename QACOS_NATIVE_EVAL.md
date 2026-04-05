@@ -2,7 +2,7 @@
 
 This release contains two distinct groups of artifacts:
 
-1. **Reviewer 8DVT: native scorer-replacement evidence inside official `hnswlib`**
+1. **Reviewers 8DVT and 9crG: native scorer-replacement evidence inside official `hnswlib`**
 2. **Reviewer 9crG: storage-aware end-to-end wall-clock follow-up**
 
 The first is the main controlled experiment: native HNSW construction and search mechanics are unchanged, and only the search-time scorer is changed. The second is a narrower practical follow-up for a two-stage retrieval setting.
@@ -28,7 +28,7 @@ The runners expect cached L2-normalized 768-d MPNet document/query embeddings un
 
 ---
 
-# Section A. Reviewer 8DVT: Native scorer-replacement inside official `hnswlib`
+# Section A. Reviewers 8DVT and 9crG: Native scorer-replacement inside official `hnswlib`
 
 ## Question Answered
 
@@ -88,7 +88,7 @@ Interpretation:
 - with native HNSW construction fixed, replacing only the search-time scorer improves the final returned frontier on average
 - QA-Cos also reaches the same target recall with fewer exact-reranked candidates
 
-## Files for Reviewer 8DVT
+## Files for Reviewers 8DVT and 9crG
 
 Main summaries:
 
@@ -186,5 +186,5 @@ Raw per-query CSVs, smoke-test outputs, and larger intermediates are intentional
 
 ## Short Takeaway
 
-- **Section A / Reviewer 8DVT:** in a strict native scorer-replacement experiment inside official `hnswlib`, QA-Cos improves frontier quality and candidate efficiency while leaving native HNSW construction unchanged.
+- **Section A / Reviewers 8DVT and 9crG:** in a strict native scorer-replacement experiment inside official `hnswlib`, QA-Cos improves frontier quality and candidate efficiency while leaving native HNSW construction unchanged.
 - **Section B / Reviewer 9crG:** in a narrower storage-aware two-stage follow-up, a practical gated QA-Cos setting can reduce search effort and downstream reread burden enough to improve end-to-end latency in some settings.
