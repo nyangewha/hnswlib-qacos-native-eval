@@ -121,9 +121,9 @@ Because QA-Cos is a **decoder-side refinement** rather than a standalone ANN met
 
 Runner used for this section: `run_native_hnsw_storage_aware_eval.py`
 
-## Practical Variant Used
+## Practical Setting Used
 
-This follow-up uses a practical gated variant:
+This follow-up uses a practical gated QA-Cos setting:
 
 - `qacos_gated`: apply QA-Cos only inside a same-count ambiguity band, and fall back to the SimHash baseline outside that band
 - reported band: `same in [74,96]`
@@ -187,4 +187,4 @@ Raw per-query CSVs, smoke-test outputs, and larger intermediates are intentional
 ## Short Takeaway
 
 - **Section A / Reviewer 8DVT:** in a strict native scorer-replacement experiment inside official `hnswlib`, QA-Cos improves frontier quality and candidate efficiency while leaving native HNSW construction unchanged.
-- **Section B / Reviewer 9crG:** in a narrower storage-aware two-stage follow-up, a practical gated QA-Cos variant can reduce search effort and downstream reread burden enough to improve end-to-end latency in some settings.
+- **Section B / Reviewer 9crG:** in a narrower storage-aware two-stage follow-up, a practical gated QA-Cos setting can reduce search effort and downstream reread burden enough to improve end-to-end latency in some settings.
