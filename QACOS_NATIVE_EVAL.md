@@ -142,7 +142,9 @@ This follow-up uses a practical gated QA-Cos setting:
 - storage modes:
   - `warm_cache`
   - `cache_limited`
-- `cache_limited` expands the file-backed store and applies cache pressure so that downstream full-vector access cost is more visible than in a warm in-memory rerank setup
+- in `warm_cache`, exact rerank reads directly from a file-backed memmap with normal page-cache reuse allowed
+- in `cache_limited`, the normalized full-vector store is first expanded into a larger replicated file-backed memmap, and rerank reads use query-dependent replica selection so repeated timed runs are less likely to hit the same trivially warm physical rows
+- before each timed `cache_limited` run, a separate file-backed cache-buster buffer is touched to add cache pressure and make downstream full-vector access cost more visible than in the warm-cache setup
 
 For the focused FiQA `Recall@100` follow-up:
 
