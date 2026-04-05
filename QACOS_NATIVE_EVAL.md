@@ -73,8 +73,8 @@ Averaged over matched settings across the four datasets:
 
 Representative figures:
 
-- `native_hnsw_tables_4dataset/table_native_hnsw_frontier_allbits.png`
-- `native_hnsw_tables_4dataset/table_native_hnsw_candidate_efficiency_allbits.png`
+- [`native_hnsw_tables_4dataset/table_native_hnsw_frontier_allbits.png`](native_hnsw_tables_4dataset/table_native_hnsw_frontier_allbits.png)
+- [`native_hnsw_tables_4dataset/table_native_hnsw_candidate_efficiency_allbits.png`](native_hnsw_tables_4dataset/table_native_hnsw_candidate_efficiency_allbits.png)
 
 - **64-bit frontier quality**
   - `Recall@10`: `0.557 -> 0.692`
@@ -158,7 +158,7 @@ Focused `FiQA, 128-bit, M=32` follow-up:
 
 Representative figure:
 
-- `native_hnsw_wallclock_storage_aware/storage_aware_r100_fiqa_m32.png`
+- [`native_hnsw_wallclock_storage_aware/storage_aware_r100_fiqa_m32.png`](native_hnsw_wallclock_storage_aware/storage_aware_r100_fiqa_m32.png)
 
 - **`Recall@100 >= 0.8`**
   - SimHash: `efSearch=1300`, cache-limited total `1.1753 ms`
