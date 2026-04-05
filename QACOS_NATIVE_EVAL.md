@@ -71,6 +71,11 @@ Native HNSW layer structures (top-to-bottom node counts):
 
 Averaged over matched settings across the four datasets:
 
+Representative figures:
+
+- `native_hnsw_tables_4dataset/table_native_hnsw_frontier_allbits.png`
+- `native_hnsw_tables_4dataset/table_native_hnsw_candidate_efficiency_allbits.png`
+
 - **64-bit frontier quality**
   - `Recall@10`: `0.557 -> 0.692`
   - `Recall@100`: `0.258 -> 0.335`
@@ -150,6 +155,10 @@ For the focused FiQA `Recall@100` follow-up:
 ## Headline Results
 
 Focused `FiQA, 128-bit, M=32` follow-up:
+
+Representative figure:
+
+- `native_hnsw_wallclock_storage_aware/storage_aware_r100_fiqa_m32.png`
 
 - **`Recall@100 >= 0.8`**
   - SimHash: `efSearch=1300`, cache-limited total `1.1753 ms`
